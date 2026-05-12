@@ -55,37 +55,47 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  matrix:
+    # GitHub Actions does not allow referencing matrix.* in job-level if:,
+    # so we generate the matrix dynamically based on the `runners` input.
+    runs-on: ubuntu-latest
+    outputs:
+      include: ${{ steps.gen.outputs.include }}
+    steps:
+      - id: gen
+        shell: bash
+        env:
+          RUNNERS: ${{ inputs.runners || 'all' }}
+        run: |
+          free='[
+            {"target":"linux-x64","runner":"ubuntu-22.04","optional":false},
+            {"target":"linux-arm64","runner":"ubuntu-22.04-arm","optional":false}
+          ]'
+          paid='[
+            {"target":"macos-x64","runner":"macos-13","optional":true},
+            {"target":"macos-arm64","runner":"macos-latest","optional":true},
+            {"target":"windows-x64","runner":"windows-latest","optional":true},
+            {"target":"windows-arm64","runner":"windows-11-arm","optional":true}
+          ]'
+          if [[ "$RUNNERS" == "free-only" ]]; then
+            include=$(jq -c <<<"$free")
+          else
+            include=$(jq -c --argjson a "$free" --argjson b "$paid" -n '$a + $b')
+          fi
+          echo "include=$include" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: matrix
     name: ${{ matrix.target }} (${{ inputs.profile || 'default' }})
     runs-on: ${{ matrix.runner }}
-    # Skip paid-runner entries when the caller asks for free-only.
-    if: ${{ inputs.runners != 'free-only' || !matrix.optional }}
-    # macOS/Windows runners are billed; mark them optional so that a
-    # billing block or paid-runner outage does NOT fail the whole workflow.
-    # Code regressions on Linux (free tier) still hard-fail PRs.
-    continue-on-error: ${{ matrix.optional || false }}
+    # macOS/Windows runners are billed; the matrix job marks them optional
+    # so that a billing block or paid-runner outage does NOT fail the whole
+    # workflow. Code regressions on Linux (free tier) still hard-fail PRs.
+    continue-on-error: ${{ matrix.optional }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - target: linux-x64
-            runner: ubuntu-22.04
-            optional: false
-          - target: linux-arm64
-            runner: ubuntu-22.04-arm
-            optional: false
-          - target: macos-x64
-            runner: macos-13
-            optional: true
-          - target: macos-arm64
-            runner: macos-latest
-            optional: true
-          - target: windows-x64
-            runner: windows-latest
-            optional: true
-          - target: windows-arm64
-            runner: windows-11-arm
-            optional: true
+        include: ${{ fromJson(needs.matrix.outputs.include) }}
     env:
       PROFILE: ${{ inputs.profile || 'default' }}
     steps:
