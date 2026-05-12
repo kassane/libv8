@@ -97,6 +97,9 @@ jobs:
         include: ${{ fromJson(needs.matrix.outputs.include) }}
     env:
       PROFILE: ${{ inputs.profile || 'default' }}
+      # V8 source + DEPS pull multi-GB of toolchain blobs; the default
+      # 10-minute segment download timeout is not enough for cache restore.
+      SEGMENT_DOWNLOAD_TIMEOUT_MINS: '30'
     steps:
       - uses: actions/checkout@v6
 
@@ -159,31 +162,34 @@ jobs:
           path: |
             .ccache
             .sccache
-          key: cc-${{ matrix.target }}-${{ env.PROFILE }}-${{ steps.ver.outputs.v8 }}
+          key: cc-${{ matrix.target }}-${{ env.PROFILE }}-${{ steps.ver.outputs.v8 }}-${{ github.run_id }}
           restore-keys: |
+            cc-${{ matrix.target }}-${{ env.PROFILE }}-${{ steps.ver.outputs.v8 }}-
             cc-${{ matrix.target }}-${{ env.PROFILE }}-
             cc-${{ matrix.target }}-
 
-      # The V8 source tree (DEPS, hooks, prebuilt clang/rust toolchains) is
-      # identical across every target on the same host OS, so cache it per-OS
-      # rather than per-target. We accept that v8/out/ rides along — scripts/
-      # build.sh runs gn gen from a fresh out/<target>.<profile>/ subdir so a
-      # stale out/ from another target's save never confuses the next build.
-      - name: Cache V8 source
-        uses: actions/cache@v5
+      # Restore + save are split for the V8 source cache so that even if
+      # Build fails later we still save what we have on disk (a populated
+      # v8/ checkout is the most expensive thing to recompute). The save
+      # step runs with if: always() but only writes when there was no
+      # primary-key hit on restore.
+      - name: Restore V8 source cache
+        id: v8src
+        uses: actions/cache/restore@v5
         with:
           path: v8
-          key: v8src-${{ runner.os }}-${{ runner.arch }}-${{ steps.ver.outputs.v8 }}-${{ hashFiles('.gclient') }}
+          key: v8src-${{ runner.os }}-${{ runner.arch }}-${{ steps.ver.outputs.v8 }}-${{ hashFiles('.gclient', 'scripts/fetch.sh') }}
           restore-keys: |
             v8src-${{ runner.os }}-${{ runner.arch }}-${{ steps.ver.outputs.v8 }}-
             v8src-${{ runner.os }}-${{ runner.arch }}-
 
-      - name: Cache depot_tools
+      - name: Restore depot_tools cache
         uses: actions/cache@v5
         with:
           path: .depot_tools
-          key: depot-tools-${{ runner.os }}
+          key: depot-tools-${{ runner.os }}-${{ runner.arch }}
           restore-keys: |
+            depot-tools-${{ runner.os }}-
             depot-tools-
 
       - uses: ./.github/actions/setup-depot-tools
@@ -191,6 +197,15 @@ jobs:
       - name: Fetch V8 source
         shell: bash
         run: ./scripts/fetch.sh
+
+      - name: Save V8 source cache
+        # Save after a successful fetch even if Build fails later. Skip
+        # when restore already hit the exact same key.
+        if: always() && steps.v8src.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: v8
+          key: ${{ steps.v8src.outputs.cache-primary-key }}
 
       - name: Install V8 system build deps (Linux)
         if: runner.os == 'Linux'
