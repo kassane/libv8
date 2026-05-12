@@ -18,10 +18,20 @@ if [[ ! -d "$V8_DIR/.git" ]]; then
   git clone --no-checkout https://chromium.googlesource.com/v8/v8.git "$V8_DIR"
 fi
 
-log "checking out V8 $V8_VERSION"
-git -C "$V8_DIR" fetch --depth=1 origin "refs/tags/$V8_VERSION:refs/tags/$V8_VERSION" \
-  || git -C "$V8_DIR" fetch origin
-git -C "$V8_DIR" checkout --detach "$V8_VERSION"
+log "resolving V8 ref: $V8_VERSION"
+# V8 ships both release tags (e.g. 14.9.207.4) and branch refs
+# (e.g. branch-heads/14.9). Try the tag first, then the branch head.
+if git -C "$V8_DIR" fetch --depth=1 origin \
+     "refs/tags/$V8_VERSION:refs/tags/$V8_VERSION" 2>/dev/null; then
+  CHECKOUT_REF="$V8_VERSION"
+elif git -C "$V8_DIR" fetch --depth=1 origin \
+       "refs/branch-heads/$V8_VERSION" 2>/dev/null; then
+  CHECKOUT_REF=FETCH_HEAD
+else
+  die "V8 ref '$V8_VERSION' not found upstream (not a tag, not a branch-head). \
+Check https://chromium.googlesource.com/v8/v8/+refs for valid refs."
+fi
+git -C "$V8_DIR" checkout --detach "$CHECKOUT_REF"
 
 log "gclient sync (this will take a while on first run)"
 gclient sync --no-history --reset --jobs="$(nproc_portable)"

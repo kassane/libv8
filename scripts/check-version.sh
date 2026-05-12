@@ -6,7 +6,7 @@ source "$(dirname "$0")/lib.sh"
 
 LATEST="$(git ls-remote --tags --refs https://chromium.googlesource.com/v8/v8.git \
   | awk -F'refs/tags/' '{print $2}' \
-  | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
+  | grep -E '^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$' \
   | sort -V \
   | tail -n1)"
 
