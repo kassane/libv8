@@ -28,7 +28,7 @@ jobs:
       latest:   ${{ steps.check.outputs.latest }}
       current:  ${{ steps.check.outputs.current }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           # Use a PAT (or default token) that can push tags + commits to main.
           token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
@@ -41,7 +41,7 @@ jobs:
     if: needs.check.outputs.outdated == 'true' || inputs.force_tag == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
 
