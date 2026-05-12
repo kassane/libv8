@@ -1,0 +1,3 @@
+# Full V8 sandbox (requires pointer compression).
+v8_enable_pointer_compression = true
+v8_enable_sandbox = true

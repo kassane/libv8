@@ -1,0 +1,7 @@
+v8/
+.depot_tools/
+dist/
+out/
+*.log
+.cache/
+.DS_Store

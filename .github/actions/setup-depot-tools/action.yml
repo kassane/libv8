@@ -1,0 +1,19 @@
+name: Setup depot_tools
+description: Clone Chromium depot_tools and add it to PATH.
+
+runs:
+  using: composite
+  steps:
+    - name: Clone depot_tools
+      shell: bash
+      run: |
+        if [[ ! -d "$GITHUB_WORKSPACE/.depot_tools" ]]; then
+          git clone --depth=1 \
+            https://chromium.googlesource.com/chromium/tools/depot_tools.git \
+            "$GITHUB_WORKSPACE/.depot_tools"
+        fi
+        echo "$GITHUB_WORKSPACE/.depot_tools" >> "$GITHUB_PATH"
+        echo "DEPOT_TOOLS_UPDATE=1" >> "$GITHUB_ENV"
+        if [[ "$RUNNER_OS" == Windows ]]; then
+          echo "DEPOT_TOOLS_WIN_TOOLCHAIN=0" >> "$GITHUB_ENV"
+        fi

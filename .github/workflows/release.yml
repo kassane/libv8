@@ -1,0 +1,69 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to (re)build and release (e.g. v14.4.114.4)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-default:
+    uses: ./.github/workflows/build.yml
+    with:
+      profile: default
+      upload_artifacts: true
+
+  build-pointer-compression:
+    uses: ./.github/workflows/build.yml
+    with:
+      profile: pointer-compression
+      upload_artifacts: true
+
+  release:
+    needs: [build-default, build-pointer-compression]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [[ -n "${{ inputs.tag }}" ]]; then
+            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten + checksum
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name '*.tar.xz' -o -name '*.zip' -o -name '*.sha256' \) \
+            -exec cp -v {} release/ \;
+          ls -la release/
+          ( cd release && sha256sum *.tar.xz *.zip 2>/dev/null > SHA256SUMS || true )
+          cat release/SHA256SUMS || true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          name: ${{ steps.tag.outputs.name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            release/*.tar.xz
+            release/*.zip
+            release/SHA256SUMS

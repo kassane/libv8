@@ -1,0 +1,6 @@
+target_os = "linux"
+target_cpu = "x64"
+v8_target_cpu = "x64"
+
+is_clang = true
+use_sysroot = false

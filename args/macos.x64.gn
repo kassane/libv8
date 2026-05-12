@@ -1,0 +1,7 @@
+target_os = "mac"
+target_cpu = "x64"
+v8_target_cpu = "x64"
+
+is_clang = true
+is_cfi = false
+is_asan = false

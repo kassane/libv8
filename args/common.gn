@@ -1,0 +1,31 @@
+# Base GN args shared across every target.
+# Per-target files (e.g. linux.x64.gn) are appended to this block and may
+# override anything declared here.
+
+is_debug = false
+is_component_build = false
+symbol_level = 0
+strip_debug_info = true
+treat_warnings_as_errors = false
+
+v8_monolithic = true
+v8_use_external_startup_data = false
+v8_enable_i18n_support = false
+v8_enable_test_features = false
+v8_enable_gdbjit = false
+v8_enable_backtrace = false
+v8_enable_snapshot_compression = false
+v8_deprecation_warnings = false
+v8_imminent_deprecation_warnings = false
+
+# Embedders typically prefer linking against the system C++ stdlib so the
+# resulting .a is consumable by any toolchain. Override to true in a profile
+# if you want hermetic linkage.
+use_custom_libcxx = false
+use_rtti = false
+
+# Rust support pulls in an extra prebuilt toolchain we don't need for a
+# pure-C++ monolith.
+enable_rust = false
+
+clang_use_chrome_plugins = false

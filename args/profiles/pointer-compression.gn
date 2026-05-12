@@ -1,0 +1,3 @@
+# Pointer compression enabled. Callers MUST be compiled with the same flag.
+v8_enable_pointer_compression = true
+v8_enable_sandbox = false

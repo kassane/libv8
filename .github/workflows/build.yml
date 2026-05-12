@@ -1,0 +1,146 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'VERSION'
+      - 'args/**'
+      - 'scripts/**'
+      - '.gclient'
+      - '.github/workflows/build.yml'
+      - '.github/actions/**'
+  pull_request:
+    paths:
+      - 'VERSION'
+      - 'args/**'
+      - 'scripts/**'
+      - '.gclient'
+      - '.github/workflows/build.yml'
+      - '.github/actions/**'
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: 'Build profile'
+        required: false
+        default: 'default'
+        type: choice
+        options: [default, pointer-compression, sandbox, i18n]
+  workflow_call:
+    inputs:
+      profile:
+        description: 'Build profile'
+        required: false
+        default: 'default'
+        type: string
+      upload_artifacts:
+        description: 'Whether to upload archives as workflow artifacts'
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  group: build-${{ github.ref }}-${{ inputs.profile || 'default' }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.target }} (${{ inputs.profile || 'default' }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-22.04
+          - target: linux-arm64
+            runner: ubuntu-22.04-arm
+          - target: macos-x64
+            runner: macos-13
+          - target: macos-arm64
+            runner: macos-14
+          - target: windows-x64
+            runner: windows-2022
+          - target: windows-arm64
+            runner: windows-2022
+    env:
+      PROFILE: ${{ inputs.profile || 'default' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read V8 version
+        id: ver
+        shell: bash
+        run: echo "v8=$(head -n1 VERSION | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ccache pkg-config xz-utils lsb-release sudo curl
+          echo "CC_WRAPPER=ccache" >> "$GITHUB_ENV"
+
+      - name: Install macOS build deps
+        if: runner.os == 'macOS'
+        run: |
+          brew install ccache xz
+          echo "CC_WRAPPER=ccache" >> "$GITHUB_ENV"
+
+      - name: Install Windows build deps
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install -y sccache --no-progress
+          echo "CC_WRAPPER=sccache" >> $env:GITHUB_ENV
+
+      - name: Cache compiler outputs
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.ccache
+            ~/.cache/ccache
+            ~/Library/Caches/ccache
+            ~/AppData/Local/Mozilla/sccache
+          key: cc-${{ matrix.target }}-${{ env.PROFILE }}-${{ steps.ver.outputs.v8 }}
+          restore-keys: |
+            cc-${{ matrix.target }}-${{ env.PROFILE }}-
+            cc-${{ matrix.target }}-
+
+      - name: Cache V8 checkout
+        uses: actions/cache@v4
+        with:
+          path: |
+            v8
+            .depot_tools
+          key: v8-${{ matrix.target }}-${{ steps.ver.outputs.v8 }}-${{ hashFiles('.gclient') }}
+          restore-keys: |
+            v8-${{ matrix.target }}-${{ steps.ver.outputs.v8 }}-
+
+      - uses: ./.github/actions/setup-depot-tools
+
+      - name: Fetch V8 source
+        shell: bash
+        run: ./scripts/fetch.sh
+
+      - name: Build
+        shell: bash
+        run: ./scripts/build.sh ${{ matrix.target }} ${{ env.PROFILE }}
+
+      - name: Package
+        shell: bash
+        run: ./scripts/package.sh ${{ matrix.target }} ${{ env.PROFILE }}
+
+      - name: Upload artifact
+        if: ${{ inputs.upload_artifacts != false }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: libv8-${{ steps.ver.outputs.v8 }}-${{ matrix.target }}-${{ env.PROFILE }}
+          path: |
+            dist/libv8-*-${{ matrix.target }}-${{ env.PROFILE }}.*
+          if-no-files-found: error
+          retention-days: 14
