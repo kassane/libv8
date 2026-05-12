@@ -1,3 +1,10 @@
 target_os = "linux"
 target_cpu = "arm64"
 v8_target_cpu = "arm64"
+
+use_sysroot = false
+v8_enable_builtins_optimization = true
+
+# Avoid lld/gold pickiness on cross-arch Linux runners.
+use_lld = false
+use_gold = false

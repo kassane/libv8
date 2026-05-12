@@ -1,3 +1,6 @@
 target_os = "linux"
 target_cpu = "x64"
 v8_target_cpu = "x64"
+
+use_sysroot = false
+v8_enable_builtins_optimization = true

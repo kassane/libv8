@@ -1,3 +1,6 @@
 target_os = "mac"
 target_cpu = "arm64"
 v8_target_cpu = "arm64"
+
+is_cfi = false
+is_asan = false

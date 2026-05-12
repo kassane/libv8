@@ -115,6 +115,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             ccache pkg-config xz-utils lsb-release sudo curl
+          # Make ccache the transparent default for any tool invocation,
+          # the way kuoruan/libv8's Linux composite action does it.
+          sudo update-ccache-symlinks
+          echo "/usr/lib/ccache" >> "$GITHUB_PATH"
+          echo "CCACHE_DIR=$GITHUB_WORKSPACE/.ccache" >> "$GITHUB_ENV"
           echo "CC_WRAPPER=ccache" >> "$GITHUB_ENV"
 
       - name: Install macOS build deps
@@ -127,24 +132,26 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          # sccache from chocolatey isn't guaranteed on every Windows image
-          # (e.g. windows-11-arm). Install best-effort and only export the
-          # wrapper if the binary actually ends up on PATH.
-          choco install -y sccache --no-progress --ignore-checksums 2>$null
+          # Use Scoop (matches kuoruan/libv8) — it has reliable native sccache
+          # builds on both windows-latest and windows-11-arm, unlike choco.
+          irm get.scoop.sh -outfile install-scoop.ps1
+          .\install-scoop.ps1 -RunAsAdmin
+          scoop install sccache
           if (Get-Command sccache -ErrorAction SilentlyContinue) {
-            "CC_WRAPPER=sccache" | Out-File -FilePath $env:GITHUB_ENV -Append
+            $sccacheDir = Join-Path $env:GITHUB_WORKSPACE ".sccache"
+            New-Item -Path $sccacheDir -ItemType Directory -Force | Out-Null
+            "SCCACHE_DIR=$sccacheDir" | Out-File -FilePath $env:GITHUB_ENV -Append
+            "CC_WRAPPER=sccache"     | Out-File -FilePath $env:GITHUB_ENV -Append
           } else {
-            Write-Host "sccache not available on this runner; building without compiler cache."
+            Write-Host "sccache not available; building without compiler cache."
           }
 
       - name: Cache compiler outputs
         uses: actions/cache@v4
         with:
           path: |
-            ~/.ccache
-            ~/.cache/ccache
-            ~/Library/Caches/ccache
-            ~/AppData/Local/Mozilla/sccache
+            .ccache
+            .sccache
           key: cc-${{ matrix.target }}-${{ env.PROFILE }}-${{ steps.ver.outputs.v8 }}
           restore-keys: |
             cc-${{ matrix.target }}-${{ env.PROFILE }}-
