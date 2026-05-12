@@ -167,9 +167,51 @@ jobs:
         shell: bash
         run: ./scripts/fetch.sh
 
+      - name: Install V8 system build deps (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          # V8 ships a canonical apt installer at build/install-build-deps.sh
+          # that pulls in libstdc++, glib, font/X11 stubs, etc. Without it the
+          # default ubuntu-22.04 image is missing several headers GN/ninja
+          # need (matches just-js/v8's CI).
+          if [[ -x v8/build/install-build-deps.sh ]]; then
+            sudo v8/build/install-build-deps.sh \
+              --no-prompt --no-chromeos-fonts --no-nacl || true
+          fi
+
+      - name: Toolchain versions
+        shell: bash
+        run: |
+          set +e
+          echo "::group::tool versions"
+          python3 --version
+          (cd v8 && gn --version) || true
+          (cd v8 && ninja --version) || true
+          clang --version || true
+          cc --version || true
+          uname -a
+          echo "::endgroup::"
+
       - name: Build
         shell: bash
-        run: ./scripts/build.sh ${{ matrix.target }} ${{ env.PROFILE }}
+        run: |
+          set -o pipefail
+          mkdir -p logs
+          ./scripts/build.sh ${{ matrix.target }} ${{ env.PROFILE }} \
+            2>&1 | tee logs/build-${{ matrix.target }}-${{ env.PROFILE }}.log
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: buildlog-${{ matrix.target }}-${{ env.PROFILE }}
+          path: |
+            logs/
+            v8/out/${{ matrix.target }}.${{ env.PROFILE }}/args.gn
+            v8/out/${{ matrix.target }}.${{ env.PROFILE }}/args.resolved.txt
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Package
         shell: bash
