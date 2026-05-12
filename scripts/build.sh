@@ -24,15 +24,8 @@ mkdir -p "$OUT_DIR"
 ARGS_FILE="$OUT_DIR/args.gn"
 compose_args "$TARGET" "$PROFILE" > "$ARGS_FILE"
 
-# Opportunistic compiler cache.
-if [[ -z "${CC_WRAPPER:-}" ]]; then
-  if   command -v sccache >/dev/null 2>&1; then CC_WRAPPER=sccache
-  elif command -v ccache  >/dev/null 2>&1; then CC_WRAPPER=ccache
-  fi
-fi
-if [[ -n "${CC_WRAPPER:-}" ]]; then
-  printf '\ncc_wrapper = "%s"\n' "$CC_WRAPPER" >> "$ARGS_FILE"
-fi
+: "${CC_WRAPPER:=$(command -v sccache 2>/dev/null || command -v ccache 2>/dev/null || true)}"
+[[ -n "$CC_WRAPPER" ]] && printf '\ncc_wrapper = "%s"\n' "$(basename "$CC_WRAPPER")" >> "$ARGS_FILE"
 
 log "effective args.gn:"
 sed 's/^/    /' "$ARGS_FILE" >&2

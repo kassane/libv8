@@ -5,8 +5,6 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEPOT_TOOLS_DIR="${DEPOT_TOOLS_DIR:-$ROOT_DIR/.depot_tools}"
 V8_DIR="${V8_DIR:-$ROOT_DIR/v8}"
-OUT_NAME="${OUT_NAME:-release}"
-OUT_DIR="${OUT_DIR:-$V8_DIR/out/$OUT_NAME}"
 DIST_DIR="${DIST_DIR:-$ROOT_DIR/dist}"
 
 V8_VERSION="$(head -n1 "$ROOT_DIR/VERSION" | tr -d '[:space:]')"

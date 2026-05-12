@@ -44,7 +44,3 @@ clean-all:
 # Compare ./VERSION against the latest upstream V8 tag.
 check-version:
     ./scripts/check-version.sh
-
-# Print the V8 version this repo is pinned to.
-version:
-    @cat VERSION

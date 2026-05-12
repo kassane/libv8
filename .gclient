@@ -10,7 +10,6 @@ solutions = [
       "v8/test/test262/data": None,
       "v8/test/test262/harness": None,
       "v8/testing/gmock": None,
-      "v8/third_party/android_ndk": None,
       "v8/third_party/android_platform": None,
       "v8/third_party/android_sdk": None,
       "v8/third_party/android_toolchain": None,
@@ -19,7 +18,6 @@ solutions = [
       "v8/third_party/fuchsia-gn-sdk": None,
       "v8/third_party/fuchsia-sdk": None,
       "v8/third_party/instrumented_libs": None,
-      "v8/third_party/instrumented_libraries": None,
       "v8/third_party/perfetto": None,
       "v8/third_party/protobuf": None,
       "v8/third_party/qemu-linux-arm64": None,
@@ -27,7 +25,6 @@ solutions = [
       "v8/third_party/qemu-mac-arm64": None,
       "v8/third_party/qemu-mac-x64": None,
       "v8/tools/luci-go": None,
-      "v8/tools/swarming_client": None,
     },
     "custom_vars": {
       "checkout_android": False,

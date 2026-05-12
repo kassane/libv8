@@ -15,13 +15,11 @@ LATEST="$(git ls-remote --tags --refs https://chromium.googlesource.com/v8/v8.gi
 echo "current: $V8_VERSION"
 echo "latest:  $LATEST"
 
+out="${GITHUB_OUTPUT:-/dev/null}"
 if [[ "$V8_VERSION" != "$LATEST" ]]; then
-  echo "::set-output name=outdated::true" 2>/dev/null || true
-  echo "outdated=true"   >> "${GITHUB_OUTPUT:-/dev/null}" 2>/dev/null || true
-  echo "latest=$LATEST"  >> "${GITHUB_OUTPUT:-/dev/null}" 2>/dev/null || true
-  echo "current=$V8_VERSION" >> "${GITHUB_OUTPUT:-/dev/null}" 2>/dev/null || true
+  { echo "outdated=true"; echo "latest=$LATEST"; echo "current=$V8_VERSION"; } >> "$out"
   exit 0
 fi
 
 echo "up to date"
-echo "outdated=false" >> "${GITHUB_OUTPUT:-/dev/null}" 2>/dev/null || true
+echo "outdated=false" >> "$out"
