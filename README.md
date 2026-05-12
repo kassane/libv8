@@ -35,7 +35,7 @@ Supported targets:
 | Linux   | x64      | `ubuntu-22.04` runner                          |
 | Linux   | arm64    | `ubuntu-22.04-arm` runner                      |
 | macOS   | x64      | `macos-13` (Xcode default SDK)                 |
-| macOS   | arm64    | `macos-14` (Xcode default SDK)                 |
+| macOS   | arm64    | `macos-latest` (Apple Silicon, Xcode default SDK) |
 | Windows | x64      | `windows-2022`, system MSVC, no Google toolchain |
 | Windows | arm64    | `windows-2022`, cross-compiled                 |
 
@@ -120,6 +120,22 @@ No human action required — set the workflow loose and forget about it.
 > **Optional** Provide a `RELEASE_TOKEN` repo secret (a PAT with `contents:write`)
 > if you protect `main` against the default `GITHUB_TOKEN`. Otherwise the
 > default token is used.
+
+## CI runner cost
+
+GitHub bills macOS and Windows minutes at 10× and 2× the Linux rate respectively.
+This repo handles that two ways:
+
+- The macOS and Windows matrix entries are marked `optional: true` and run with
+  `continue-on-error`, so a paid-runner billing block (or outage) will not turn
+  a PR red — Linux jobs still hard-fail on real regressions.
+- `build.yml` (manual run / `workflow_call`) accepts a `runners` input:
+  - `all` (default) — Linux + macOS + Windows
+  - `free-only` — Linux x64 + Linux arm64 only
+
+`release.yml` always uses `runners: all` so published releases include every
+platform. If a billing block prevents that, fix the billing and re-run the
+release workflow from the Actions tab.
 
 ## Repository layout
 
