@@ -131,19 +131,26 @@ jobs:
       - name: Install Windows build deps
         if: runner.os == 'Windows'
         shell: pwsh
+        # sccache is optional — the build works fine without it. Never let a
+        # Scoop install hiccup (especially on windows-11-arm) kill the job.
+        continue-on-error: true
         run: |
-          # Use Scoop (matches kuoruan/libv8) — it has reliable native sccache
-          # builds on both windows-latest and windows-11-arm, unlike choco.
-          irm get.scoop.sh -outfile install-scoop.ps1
-          .\install-scoop.ps1 -RunAsAdmin
-          scoop install sccache
+          $ErrorActionPreference = 'Continue'
+          try {
+            irm get.scoop.sh -outfile install-scoop.ps1
+            .\install-scoop.ps1 -RunAsAdmin -ErrorAction SilentlyContinue
+            scoop install sccache
+          } catch {
+            Write-Host "Scoop / sccache install threw: $_  (continuing without it)"
+          }
           if (Get-Command sccache -ErrorAction SilentlyContinue) {
             $sccacheDir = Join-Path $env:GITHUB_WORKSPACE ".sccache"
             New-Item -Path $sccacheDir -ItemType Directory -Force | Out-Null
             "SCCACHE_DIR=$sccacheDir" | Out-File -FilePath $env:GITHUB_ENV -Append
             "CC_WRAPPER=sccache"     | Out-File -FilePath $env:GITHUB_ENV -Append
+            Write-Host "sccache available; using it as CC_WRAPPER."
           } else {
-            Write-Host "sccache not available; building without compiler cache."
+            Write-Host "sccache not on PATH; building without compiler cache."
           }
 
       - name: Cache compiler outputs
