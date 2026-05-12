@@ -117,7 +117,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            ccache pkg-config xz-utils lsb-release sudo curl
+            ccache pkg-config xz-utils lsb-release sudo curl \
+            clang lld
+          # V8's bundled clang in v8/third_party/llvm-build is shipped for
+          # host x86_64; on ubuntu-22.04-arm the prebuilt may be absent or
+          # mis-arched, so make sure the system clang is also on PATH.
           # Make ccache the transparent default for any tool invocation,
           # the way kuoruan/libv8's Linux composite action does it.
           sudo update-ccache-symlinks
@@ -214,11 +218,20 @@ jobs:
           # V8 ships a canonical apt installer at build/install-build-deps.sh
           # that pulls in libstdc++, glib, font/X11 stubs, etc. Without it the
           # default ubuntu-22.04 image is missing several headers GN/ninja
-          # need (matches just-js/v8's CI).
+          # need (matches just-js/v8's CI). On the arm64 runner the script
+          # also needs --arm to skip i386 cross-compile package installs.
           if [[ -x v8/build/install-build-deps.sh ]]; then
+            EXTRA=""
+            [[ "$(uname -m)" == "aarch64" ]] && EXTRA="--arm"
             sudo v8/build/install-build-deps.sh \
-              --no-prompt --no-chromeos-fonts --no-nacl || true
+              --no-prompt --no-chromeos-fonts --no-nacl $EXTRA || true
           fi
+
+      - name: Set up MSVC Developer Command Prompt
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.target == 'windows-arm64' && 'amd64_arm64' || 'amd64' }}
 
       - name: Toolchain versions
         shell: bash
