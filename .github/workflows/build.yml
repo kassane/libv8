@@ -81,10 +81,10 @@ jobs:
             runner: macos-latest
             optional: true
           - target: windows-x64
-            runner: windows-2022
+            runner: windows-latest
             optional: true
           - target: windows-arm64
-            runner: windows-2022
+            runner: windows-11-arm
             optional: true
     env:
       PROFILE: ${{ inputs.profile || 'default' }}
@@ -118,8 +118,15 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          choco install -y sccache --no-progress
-          echo "CC_WRAPPER=sccache" >> $env:GITHUB_ENV
+          # sccache from chocolatey isn't guaranteed on every Windows image
+          # (e.g. windows-11-arm). Install best-effort and only export the
+          # wrapper if the binary actually ends up on PATH.
+          choco install -y sccache --no-progress --ignore-checksums 2>$null
+          if (Get-Command sccache -ErrorAction SilentlyContinue) {
+            "CC_WRAPPER=sccache" | Out-File -FilePath $env:GITHUB_ENV -Append
+          } else {
+            Write-Host "sccache not available on this runner; building without compiler cache."
+          }
 
       - name: Cache compiler outputs
         uses: actions/cache@v4

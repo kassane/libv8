@@ -36,8 +36,8 @@ Supported targets:
 | Linux   | arm64    | `ubuntu-22.04-arm` runner                      |
 | macOS   | x64      | `macos-13` (Xcode default SDK)                 |
 | macOS   | arm64    | `macos-latest` (Apple Silicon, Xcode default SDK) |
-| Windows | x64      | `windows-2022`, system MSVC, no Google toolchain |
-| Windows | arm64    | `windows-2022`, cross-compiled                 |
+| Windows | x64      | `windows-latest` (Server 2025), system MSVC, no Google toolchain |
+| Windows | arm64    | `windows-11-arm` (native ARM64 partner runner) |
 
 Supported build profiles (see `args/profiles/`):
 
