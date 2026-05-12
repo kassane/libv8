@@ -212,6 +212,31 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      - name: Surface build log to run summary on failure
+        if: failure()
+        shell: bash
+        run: |
+          LOG="logs/build-${{ matrix.target }}-${{ env.PROFILE }}.log"
+          {
+            echo "## Build failure: ${{ matrix.target }} (${{ env.PROFILE }})"
+            echo ""
+            if [[ -f "$LOG" ]]; then
+              echo "### Last 200 lines of build log"
+              echo '```'
+              tail -n 200 "$LOG"
+              echo '```'
+            else
+              echo "_(no $LOG produced — failed before Build step ran)_"
+            fi
+            echo ""
+            if [[ -f "v8/out/${{ matrix.target }}.${{ env.PROFILE }}/args.gn" ]]; then
+              echo "### Effective args.gn"
+              echo '```'
+              cat "v8/out/${{ matrix.target }}.${{ env.PROFILE }}/args.gn"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Package
         shell: bash
         run: ./scripts/package.sh ${{ matrix.target }} ${{ env.PROFILE }}
