@@ -1,3 +1,0 @@
-target_os = "win"
-target_cpu = "x64"
-v8_target_cpu = "x64"

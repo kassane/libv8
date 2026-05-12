@@ -27,15 +27,16 @@ args.gn                 # exact GN args used for this build
 VERSION                 # V8 tag this artifact was cut from
 ```
 
-Supported targets:
+Supported targets (CI-built):
 
-| OS      | Arch  | Runner                                          |
-|---------|-------|-------------------------------------------------|
-| Linux   | x64   | `ubuntu-22.04`                                  |
-| Linux   | arm64 | `ubuntu-22.04-arm`                              |
-| macOS   | arm64 | `macos-latest` (Apple Silicon)                  |
-| Windows | x64   | `windows-latest` (Server 2025)                  |
-| Windows | arm64 | `windows-11-arm` (Arm Limited partner runner)   |
+| OS    | Arch  | Runner                          |
+|-------|-------|---------------------------------|
+| Linux | x64   | `ubuntu-22.04`                  |
+| macOS | arm64 | `macos-latest` (Apple Silicon)  |
+
+> Linux arm64, Windows x64 and Windows arm64 are currently disabled in CI —
+> V8's bundled toolchain (clang + rust) does not cleanly support those
+> runners in the configuration this repo uses. PRs welcome.
 
 Build profiles (see `args/profiles/`):
 

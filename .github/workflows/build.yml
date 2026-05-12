@@ -68,13 +68,10 @@ jobs:
           RUNNERS: ${{ inputs.runners || 'all' }}
         run: |
           free='[
-            {"target":"linux-x64","runner":"ubuntu-22.04","optional":false},
-            {"target":"linux-arm64","runner":"ubuntu-22.04-arm","optional":false}
+            {"target":"linux-x64","runner":"ubuntu-22.04","optional":false}
           ]'
           paid='[
-            {"target":"macos-arm64","runner":"macos-latest","optional":true},
-            {"target":"windows-x64","runner":"windows-latest","optional":true},
-            {"target":"windows-arm64","runner":"windows-11-arm","optional":true}
+            {"target":"macos-arm64","runner":"macos-latest","optional":true}
           ]'
           if [[ "$RUNNERS" == "free-only" ]]; then
             include=$(jq -c <<<"$free")
@@ -114,11 +111,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            ccache pkg-config xz-utils lsb-release sudo curl \
-            clang lld
-          # V8's bundled clang in v8/third_party/llvm-build is shipped for
-          # host x86_64; on ubuntu-22.04-arm the prebuilt may be absent or
-          # mis-arched, so make sure the system clang is also on PATH.
+            ccache pkg-config xz-utils lsb-release sudo curl
           # Make ccache the transparent default for any tool invocation,
           # the way kuoruan/libv8's Linux composite action does it.
           sudo update-ccache-symlinks
@@ -131,31 +124,6 @@ jobs:
         run: |
           brew install ccache xz
           echo "CC_WRAPPER=ccache" >> "$GITHUB_ENV"
-
-      - name: Install Windows build deps
-        if: runner.os == 'Windows'
-        shell: pwsh
-        # sccache is optional — the build works fine without it. Never let a
-        # Scoop install hiccup (especially on windows-11-arm) kill the job.
-        continue-on-error: true
-        run: |
-          $ErrorActionPreference = 'Continue'
-          try {
-            irm get.scoop.sh -outfile install-scoop.ps1
-            .\install-scoop.ps1 -RunAsAdmin -ErrorAction SilentlyContinue
-            scoop install sccache
-          } catch {
-            Write-Host "Scoop / sccache install threw: $_  (continuing without it)"
-          }
-          if (Get-Command sccache -ErrorAction SilentlyContinue) {
-            $sccacheDir = Join-Path $env:GITHUB_WORKSPACE ".sccache"
-            New-Item -Path $sccacheDir -ItemType Directory -Force | Out-Null
-            "SCCACHE_DIR=$sccacheDir" | Out-File -FilePath $env:GITHUB_ENV -Append
-            "CC_WRAPPER=sccache"     | Out-File -FilePath $env:GITHUB_ENV -Append
-            Write-Host "sccache available; using it as CC_WRAPPER."
-          } else {
-            Write-Host "sccache not on PATH; building without compiler cache."
-          }
 
       - name: Cache compiler outputs
         uses: actions/cache@v5
@@ -180,22 +148,13 @@ jobs:
         shell: bash
         run: |
           # V8 ships a canonical apt installer at build/install-build-deps.sh
-          # that pulls in libstdc++, glib, font/X11 stubs, etc. Without it the
-          # default ubuntu-22.04 image is missing several headers GN/ninja
-          # need (matches just-js/v8's CI). On the arm64 runner the script
-          # also needs --arm to skip i386 cross-compile package installs.
+          # that pulls in libstdc++, glib, font/X11 stubs, etc. Without it
+          # the default ubuntu-22.04 image is missing several headers GN/
+          # ninja need (matches just-js/v8's CI).
           if [[ -x v8/build/install-build-deps.sh ]]; then
-            EXTRA=""
-            [[ "$(uname -m)" == "aarch64" ]] && EXTRA="--arm"
             sudo v8/build/install-build-deps.sh \
-              --no-prompt --no-chromeos-fonts --no-nacl $EXTRA || true
+              --no-prompt --no-chromeos-fonts --no-nacl || true
           fi
-
-      - name: Set up MSVC Developer Command Prompt
-        if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: ${{ matrix.target == 'windows-arm64' && 'amd64_arm64' || 'amd64' }}
 
       - name: Toolchain versions
         shell: bash

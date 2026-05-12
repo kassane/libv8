@@ -1,3 +1,0 @@
-target_os = "win"
-target_cpu = "arm64"
-v8_target_cpu = "arm64"
