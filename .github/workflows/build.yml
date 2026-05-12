@@ -72,7 +72,6 @@ jobs:
             {"target":"linux-arm64","runner":"ubuntu-22.04-arm","optional":false}
           ]'
           paid='[
-            {"target":"macos-x64","runner":"macos-13","optional":true},
             {"target":"macos-arm64","runner":"macos-latest","optional":true},
             {"target":"windows-x64","runner":"windows-latest","optional":true},
             {"target":"windows-arm64","runner":"windows-11-arm","optional":true}

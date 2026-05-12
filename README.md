@@ -33,7 +33,6 @@ Supported targets:
 |---------|-------|-------------------------------------------------|
 | Linux   | x64   | `ubuntu-22.04`                                  |
 | Linux   | arm64 | `ubuntu-22.04-arm`                              |
-| macOS   | x64   | `macos-13`                                      |
 | macOS   | arm64 | `macos-latest` (Apple Silicon)                  |
 | Windows | x64   | `windows-latest` (Server 2025)                  |
 | Windows | arm64 | `windows-11-arm` (Arm Limited partner runner)   |
