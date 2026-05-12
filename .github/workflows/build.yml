@@ -166,15 +166,13 @@ jobs:
 
       # The V8 source tree (DEPS, hooks, prebuilt clang/rust toolchains) is
       # identical across every target on the same host OS, so cache it per-OS
-      # rather than per-target. We exclude v8/out/ so build outputs from one
-      # target don't pollute the cache for another. With 5 targets sharing,
-      # this stays well under the 10 GB per-repo cache quota.
+      # rather than per-target. We accept that v8/out/ rides along — scripts/
+      # build.sh runs gn gen from a fresh out/<target>.<profile>/ subdir so a
+      # stale out/ from another target's save never confuses the next build.
       - name: Cache V8 source
         uses: actions/cache@v5
         with:
-          path: |
-            v8
-            !v8/out
+          path: v8
           key: v8src-${{ runner.os }}-${{ runner.arch }}-${{ steps.ver.outputs.v8 }}-${{ hashFiles('.gclient') }}
           restore-keys: |
             v8src-${{ runner.os }}-${{ runner.arch }}-${{ steps.ver.outputs.v8 }}-
