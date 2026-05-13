@@ -68,10 +68,13 @@ jobs:
           RUNNERS: ${{ inputs.runners || 'all' }}
         run: |
           free='[
-            {"target":"linux-x64","runner":"ubuntu-22.04","optional":false}
+            {"target":"linux-x64","runner":"ubuntu-22.04","optional":false},
+            {"target":"linux-arm64","runner":"ubuntu-22.04-arm","optional":true}
           ]'
           paid='[
-            {"target":"macos-arm64","runner":"macos-latest","optional":true}
+            {"target":"macos-arm64","runner":"macos-latest","optional":true},
+            {"target":"windows-x64","runner":"windows-latest","optional":true},
+            {"target":"windows-arm64","runner":"windows-11-arm","optional":true}
           ]'
           if [[ "$RUNNERS" == "free-only" ]]; then
             include=$(jq -c <<<"$free")
@@ -112,6 +115,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             ccache pkg-config xz-utils lsb-release sudo curl
+          # On linux-arm64 also install clang + lld since V8's bundled
+          # toolchain may not be shipped as a native aarch64 binary.
+          if [[ "$(uname -m)" == "aarch64" ]]; then
+            sudo apt-get install -y --no-install-recommends clang lld
+          fi
           # Make ccache the transparent default for any tool invocation,
           # the way kuoruan/libv8's Linux composite action does it.
           sudo update-ccache-symlinks
@@ -124,6 +132,17 @@ jobs:
         run: |
           brew install ccache xz
           echo "CC_WRAPPER=ccache" >> "$GITHUB_ENV"
+
+      - name: Install Windows build deps
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Both just-js/v8 and kuoruan/libv8 build Windows without
+          # ilammy/msvc-dev-cmd@v1 in the compile path; they rely on the
+          # runner's default MSVC env. Match that.
+          # depot_tools needs this on Windows to read the global gitconfig.
+          git config --global depot-tools.allowGlobalGitConfig true
+          "DEPOT_TOOLS_WIN_TOOLCHAIN=0" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Cache compiler outputs
         uses: actions/cache@v5
@@ -150,10 +169,13 @@ jobs:
           # V8 ships a canonical apt installer at build/install-build-deps.sh
           # that pulls in libstdc++, glib, font/X11 stubs, etc. Without it
           # the default ubuntu-22.04 image is missing several headers GN/
-          # ninja need (matches just-js/v8's CI).
+          # ninja need. Pass --arm on aarch64 hosts so it skips i386 cross-
+          # compile packages that don't exist on arm64.
           if [[ -x v8/build/install-build-deps.sh ]]; then
+            EXTRA=""
+            [[ "$(uname -m)" == "aarch64" ]] && EXTRA="--arm"
             sudo v8/build/install-build-deps.sh \
-              --no-prompt --no-chromeos-fonts --no-nacl || true
+              --no-prompt --no-chromeos-fonts --no-nacl $EXTRA || true
           fi
 
       - name: Toolchain versions
@@ -176,6 +198,20 @@ jobs:
           mkdir -p logs
           ./scripts/build.sh ${{ matrix.target }} ${{ env.PROFILE }} \
             2>&1 | tee logs/build-${{ matrix.target }}-${{ env.PROFILE }}.log
+
+      - name: Dump build log inline on failure
+        if: failure()
+        shell: bash
+        run: |
+          LOG="logs/build-${{ matrix.target }}-${{ env.PROFILE }}.log"
+          echo "::group::Last 200 lines of $LOG"
+          [[ -f "$LOG" ]] && tail -n 200 "$LOG" \
+            || echo "(no log file — failure was before Build step)"
+          echo "::endgroup::"
+          echo "::group::Effective args.gn"
+          F="v8/out/${{ matrix.target }}.${{ env.PROFILE }}/args.gn"
+          [[ -f "$F" ]] && cat "$F" || echo "(no args.gn)"
+          echo "::endgroup::"
 
       - name: Upload build log on failure
         if: failure()

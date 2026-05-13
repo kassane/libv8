@@ -27,16 +27,18 @@ args.gn                 # exact GN args used for this build
 VERSION                 # V8 tag this artifact was cut from
 ```
 
-Supported targets (CI-built):
+Supported targets:
 
-| OS    | Arch  | Runner                          |
-|-------|-------|---------------------------------|
-| Linux | x64   | `ubuntu-22.04`                  |
-| macOS | arm64 | `macos-latest` (Apple Silicon)  |
+| OS      | Arch  | Runner                          | Status |
+|---------|-------|---------------------------------|--------|
+| Linux   | x64   | `ubuntu-22.04`                  | ✅ required |
+| Linux   | arm64 | `ubuntu-22.04-arm`              | optional |
+| macOS   | arm64 | `macos-latest`                  | optional |
+| Windows | x64   | `windows-latest` (Server 2025)  | optional |
+| Windows | arm64 | `windows-11-arm`                | optional |
 
-> Linux arm64, Windows x64 and Windows arm64 are currently disabled in CI —
-> V8's bundled toolchain (clang + rust) does not cleanly support those
-> runners in the configuration this repo uses. PRs welcome.
+Optional targets run with `continue-on-error`, so a failure on them doesn't
+fail the workflow. Linux x64 is the only hard-required target.
 
 Build profiles (see `args/profiles/`):
 
