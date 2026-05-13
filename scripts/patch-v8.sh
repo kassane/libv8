@@ -288,4 +288,46 @@ if applied == 0:
 p.write_text(src, encoding="utf-8")
 PYEOF
 
+# ----------------------------------------------------------------------------
+# Patch 6: src/objects/tagged.h — deduction guide takes T by const-ref.
+#
+# V8 has the CTAD pattern
+#     Tagged(*this)        // *this is e.g. JSObject&
+# in a bunch of inline functions. The matching deduction guide is
+#     template <class T> Tagged(T object) -> Tagged<T>;
+# which takes T *by value*, requiring a copy. JSObject inherits from
+# HeapObjectLayout whose copy constructor is `= delete`, so this is
+# ill-formed. clang on linux-x64 elides the copy via implementation-
+# defined behaviour and never instantiates the copy ctor; gcc-12 on
+# linux-arm64 reports `use of deleted function JSObject::JSObject(
+# const JSObject&)`.
+#
+# Take T by const reference so deduction works without copying. T is
+# still deduced as the bare type (references stripped during CTAD's
+# normal rules), so callers don't need to change.
+run_py_patch \
+  "tagged.h: deduction guide takes T by const-ref" \
+  "$V8_DIR/src/objects/tagged.h" \
+  "// libv8: deduction guide takes T by const-ref" <<'PYEOF'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+src = p.read_text(encoding="utf-8")
+old = (
+    "template <class T>\n"
+    "Tagged(T object) -> Tagged<T>;"
+)
+new = (
+    "// libv8: deduction guide takes T by const-ref so CTAD does not\n"
+    "// require the source to be copy-constructible (V8 HeapObjectLayout\n"
+    "// and friends delete the copy ctor; gcc-12 then rejects\n"
+    "// Tagged(*this) at deduction time).\n"
+    "template <class T>\n"
+    "Tagged(const T& object) -> Tagged<T>;"
+)
+if old not in src:
+    sys.exit("tagged.h: deduction guide pattern not found")
+src = src.replace(old, new, 1)
+p.write_text(src, encoding="utf-8")
+PYEOF
+
 log "patch-v8.sh: done"
