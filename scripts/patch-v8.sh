@@ -165,86 +165,24 @@ p.write_text(src.replace(needle, replacement, 1), encoding="utf-8")
 PYEOF
 
 # ----------------------------------------------------------------------------
-# Patch 4: src/objects/object-macros.h — V8_ABSTRACT_OBJECT_PUSH pack(4).
+# Patch 4: [REVERTED — see note]
 #
-# V8 14.9 declares ExtendedMap and other abstract base classes via
-# V8_ABSTRACT_OBJECT, which expands to V8_ABSTRACT_OBJECT_PUSH using
-# pragma pack(1) (vs V8_OBJECT_PUSH's pack(4)). Torque, however,
-# generates kSize / field offsets assuming pack(4) for every
-# @cppObjectLayoutDefinition class, regardless of abstract-ness.
+# A previous version of this patch lifted V8_ABSTRACT_OBJECT_PUSH from
+# pack(1) to pack(4) on MS ABI to "match" Torque's emitted kSize. That
+# was based on a misread of the static_assert error: Torque's kSize for
+# ExtendedMap is actually 73 (not 76), and on Itanium ABI gcc/clang
+# already gives sizeof = 73 (derived class alignment is NOT forced up
+# to base alignment under pack(1) on Itanium). Lifting pack made C++
+# sizeof = 76 — moving AWAY from Torque's 73, not toward it — and
+# regressed macos-arm64, linux-arm64, windows-x64 with `73 == 76`.
 #
-# On the Itanium C++ ABI (gcc/clang on Linux/macOS), inheritance from a
-# pack(4) parent makes derived alignment = max(parent_align, own_align)
-# = 4 even when the derived class's own pack is 1, so sizeof rounds to
-# the Torque-expected value and the asserts pass. On the MS ABI
-# (clang-cl on Windows), pack(1) is honoured strictly: ExtendedMap
-# sizeof = 73 instead of Torque's 76, and the 3-byte gap propagates
-# into JSInterceptorMap::extended_padding_ / named_interceptor_ /
-# indexed_interceptor_ offsets.
-#
-# Lift V8_ABSTRACT_OBJECT_PUSH to pack(4) so the C++ layout matches
-# Torque's assumption universally. The change is a no-op on Linux
-# (sizeof was already 76 due to inherited alignment).
-run_py_patch \
-  "object-macros.h: V8_ABSTRACT_OBJECT_PUSH pack(4) on MS ABI only" \
-  "$V8_DIR/src/objects/object-macros.h" \
-  "// libv8: V8_ABSTRACT_OBJECT_PUSH pack(4) on MS ABI only" <<'PYEOF'
-import pathlib, re, sys
-p = pathlib.Path(sys.argv[1])
-src = p.read_text(encoding="utf-8")
-
-# Strategy: replace the gcc/clang-branch V8_ABSTRACT_OBJECT_PUSH macro
-# with a #if defined(_MSC_VER)/#else pair. clang-cl is the only thing
-# that defines both __clang__ and _MSC_VER, so this picks up the MS ABI
-# path used by windows-x64 while leaving regular gcc / clang (Linux,
-# macOS) on the upstream pack(1) + -Werror=padded behaviour.
-gcc_clang_re = re.compile(
-    r'#define\s+V8_ABSTRACT_OBJECT_PUSH\s*\\\n'
-    r'\s*_Pragma\("pack\(push\)"\)\s+_Pragma\("pack\(1\)"\)\s+'
-    r'_Pragma\("GCC diagnostic push"\)\s*\\\n'
-    r'\s*_Pragma\("GCC diagnostic error \\"-Wpadded\\""\)'
-)
-gcc_clang_replacement = (
-    "// libv8: V8_ABSTRACT_OBJECT_PUSH pack(4) on MS ABI only\n"
-    "// (clang-cl matches the gcc/clang branch because __clang__ is\n"
-    "// defined, but MS ABI honours pack(1) strictly and gives\n"
-    "// sizeof(ExtendedMap)=73 instead of Torque's 76. Itanium ABI\n"
-    "// (Linux/macOS gcc/clang) already gives the right size via\n"
-    "// inheritance-driven alignment, so leave pack(1) alone there.)\n"
-    "#if defined(_MSC_VER)\n"
-    "#define V8_ABSTRACT_OBJECT_PUSH                                           \\\n"
-    "  _Pragma(\"pack(push)\") _Pragma(\"pack(4)\") _Pragma(\"GCC diagnostic push\") \\\n"
-    "      _Pragma(\"GCC diagnostic ignored \\\"-Wpadded\\\"\")\n"
-    "#else\n"
-    "#define V8_ABSTRACT_OBJECT_PUSH                                           \\\n"
-    "  _Pragma(\"pack(push)\") _Pragma(\"pack(1)\") _Pragma(\"GCC diagnostic push\") \\\n"
-    "      _Pragma(\"GCC diagnostic error \\\"-Wpadded\\\"\")\n"
-    "#endif"
-)
-
-# Pure-MSVC branch (no __clang__): keep pack(4) since MS ABI needs it
-# and the silencing of warning 4820 is harmless.
-msvc_re = re.compile(
-    r'#define\s+V8_ABSTRACT_OBJECT_PUSH\s*\\\n'
-    r'\s*__pragma\(pack\(push\)\)\s+__pragma\(pack\(1\)\)\s+'
-    r'__pragma\(warning\(push\)\)\s*\\\n'
-    r'\s*__pragma\(warning\(default : 4820\)\)'
-)
-msvc_replacement = (
-    "#define V8_ABSTRACT_OBJECT_PUSH                                  \\\n"
-    "  __pragma(pack(push)) __pragma(pack(4)) __pragma(warning(push)) \\\n"
-    "      __pragma(warning(disable : 4820))"
-)
-
-n = 0
-src, k = gcc_clang_re.subn(gcc_clang_replacement, src, count=1)
-n += k
-src, k = msvc_re.subn(msvc_replacement, src, count=1)
-n += k
-if n == 0:
-    sys.exit("object-macros.h: no V8_ABSTRACT_OBJECT_PUSH patterns matched")
-p.write_text(src, encoding="utf-8")
-PYEOF
+# The Windows-x64 ExtendedMap mismatch on MS ABI (which forces
+# alignof(Derived) >= alignof(Base) so pack(1) gives sizeof = 76)
+# cannot be fixed by any pack pragma — it requires either a Torque-side
+# patch (kSize -> 76 on MS ABI) or a way to reduce class alignment
+# below the base's, which no portable C++ attribute provides. Document
+# the windows-x64 / windows-arm64 ExtendedMap fail and revisit if V8
+# upstream ships a fix.
 
 # ----------------------------------------------------------------------------
 # Patch 5: src/base/flags.h — drop constexpr from defaulted operator==.
