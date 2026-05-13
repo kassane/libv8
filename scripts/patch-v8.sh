@@ -164,4 +164,67 @@ replacement = (
 p.write_text(src.replace(needle, replacement, 1), encoding="utf-8")
 PYEOF
 
+# ----------------------------------------------------------------------------
+# Patch 4: src/objects/object-macros.h — V8_ABSTRACT_OBJECT_PUSH pack(4).
+#
+# V8 14.9 declares ExtendedMap and other abstract base classes via
+# V8_ABSTRACT_OBJECT, which expands to V8_ABSTRACT_OBJECT_PUSH using
+# pragma pack(1) (vs V8_OBJECT_PUSH's pack(4)). Torque, however,
+# generates kSize / field offsets assuming pack(4) for every
+# @cppObjectLayoutDefinition class, regardless of abstract-ness.
+#
+# On the Itanium C++ ABI (gcc/clang on Linux/macOS), inheritance from a
+# pack(4) parent makes derived alignment = max(parent_align, own_align)
+# = 4 even when the derived class's own pack is 1, so sizeof rounds to
+# the Torque-expected value and the asserts pass. On the MS ABI
+# (clang-cl on Windows), pack(1) is honoured strictly: ExtendedMap
+# sizeof = 73 instead of Torque's 76, and the 3-byte gap propagates
+# into JSInterceptorMap::extended_padding_ / named_interceptor_ /
+# indexed_interceptor_ offsets.
+#
+# Lift V8_ABSTRACT_OBJECT_PUSH to pack(4) so the C++ layout matches
+# Torque's assumption universally. The change is a no-op on Linux
+# (sizeof was already 76 due to inherited alignment).
+run_py_patch \
+  "object-macros.h: V8_ABSTRACT_OBJECT_PUSH pack(4)" \
+  "$V8_DIR/src/objects/object-macros.h" \
+  "// libv8: V8_ABSTRACT_OBJECT_PUSH pack(4) to match Torque" <<'PYEOF'
+import pathlib, re, sys
+p = pathlib.Path(sys.argv[1])
+src = p.read_text(encoding="utf-8")
+
+# Replace pack(1) → pack(4) only within the V8_ABSTRACT_OBJECT_PUSH
+# macro definitions. There are typically two (gcc/clang vs MSVC); patch
+# both, since Torque's assumption is global.
+patterns = [
+    # gcc/clang branch: _Pragma("pack(1)")
+    (r'(#define\s+V8_ABSTRACT_OBJECT_PUSH[^\n]*\\\n\s*_Pragma\("pack\(push\)"\)\s+_Pragma\(")pack\(1\)("\))',
+     r'\1pack(4)\2'),
+    # MSVC branch: __pragma(pack(1))
+    (r'(#define\s+V8_ABSTRACT_OBJECT_PUSH[^\n]*\\\n\s*__pragma\(pack\(push\)\)\s+__pragma\()pack\(1\)(\))',
+     r'\1pack(4)\2'),
+]
+n = 0
+for pat, repl in patterns:
+    src, k = re.subn(pat, repl, src)
+    n += k
+if n == 0:
+    sys.exit("object-macros.h: no V8_ABSTRACT_OBJECT_PUSH pack(1) match")
+
+header = (
+    "// libv8: V8_ABSTRACT_OBJECT_PUSH pack(4) to match Torque\n"
+    "// (V8 14.9 ExtendedMap inherits as pack(1) but Torque computes\n"
+    "// kSize assuming pack(4); MS ABI honours pack(1) strictly,\n"
+    "// breaking JSInterceptorMap field-offset static_asserts on\n"
+    "// windows-x64 clang-cl. No-op on Itanium ABI Linux/macOS.)\n"
+)
+# Place the header comment right before the first V8_ABSTRACT_OBJECT_PUSH
+# define so the sentinel grep finds it.
+m = re.search(r"^#define\s+V8_ABSTRACT_OBJECT_PUSH", src, flags=re.MULTILINE)
+if not m:
+    sys.exit("object-macros.h: V8_ABSTRACT_OBJECT_PUSH define not found post-patch")
+src = src[:m.start()] + header + src[m.start():]
+p.write_text(src, encoding="utf-8")
+PYEOF
+
 log "patch-v8.sh: done"
