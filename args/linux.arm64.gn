@@ -3,14 +3,5 @@ target_cpu = "arm64"
 v8_target_cpu = "arm64"
 
 use_sysroot = false
-
-# On native linux-aarch64 hosts, V8's bundled clang at
-# v8/third_party/llvm-build may not match the host arch. Pin to the
-# system clang installed via apt by the workflow.
-clang_base_path = "/usr"
-clang_use_chrome_plugins = false
-
-# lld is preinstalled when we apt-install it; lets V8 link without the
-# bundled gold/lld that may not be aarch64-native.
-use_lld = true
+use_lld = false
 use_gold = false

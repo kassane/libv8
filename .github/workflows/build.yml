@@ -54,6 +54,11 @@ concurrency:
   group: build-${{ github.ref }}-${{ inputs.profile || 'default' }}-${{ inputs.runners || 'all' }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  # Needed by the "Post failure log as PR comment" step on PR events.
+  pull-requests: write
+
 jobs:
   matrix:
     # GitHub Actions does not allow referencing matrix.* in job-level if:,
@@ -249,6 +254,37 @@ jobs:
               echo '```'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post failure log as PR comment
+        if: failure() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET: ${{ matrix.target }}
+          PROFILE: ${{ env.PROFILE }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        shell: bash
+        # Posts the build-log tail as a PR comment so it's readable from
+        # the GitHub API without auth-gated artifact downloads. Best-effort
+        # — never fail the job because the comment could not be posted.
+        continue-on-error: true
+        run: |
+          LOG="logs/build-${TARGET}-${PROFILE}.log"
+          [[ -f "$LOG" ]] || { echo "no log file"; exit 0; }
+          BODY="$(mktemp)"
+          {
+            echo "### \`${TARGET}\` (${PROFILE}) failed — [run](${RUN_URL})"
+            echo ""
+            echo '<details><summary>Last 80 lines of build log</summary>'
+            echo ""
+            echo '```'
+            tail -n 80 "$LOG"
+            echo '```'
+            echo '</details>'
+          } > "$BODY"
+          # gh ships preinstalled on every github-hosted runner.
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file "$BODY" || true
 
       - name: Package
         shell: bash
