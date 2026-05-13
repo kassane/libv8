@@ -56,14 +56,34 @@ jobs:
           ( cd release && sha256sum *.tar.xz *.zip 2>/dev/null > SHA256SUMS || true )
           cat release/SHA256SUMS || true
 
+      - name: Resolve release files
+        id: files
+        # Optional targets (windows-*, macos-*, linux-arm64) may fail per V8
+        # 14.9 blockers documented in README — when they do, their archives
+        # don't exist. Enumerate what's actually present rather than relying
+        # on glob patterns, so softprops/action-gh-release doesn't trip its
+        # "unmatched pattern" check on legitimately-absent optional outputs.
+        # Hard-require the linux-x64 tar.xz (the only mandatory target).
+        run: |
+          shopt -s nullglob
+          if ! compgen -G 'release/*linux-x64*.tar.xz' > /dev/null; then
+            echo "::error::required linux-x64 archive missing from release/"
+            ls -la release/
+            exit 1
+          fi
+          {
+            echo "list<<EOF"
+            for f in release/*.tar.xz release/*.zip release/SHA256SUMS; do
+              [[ -e "$f" ]] && echo "$f"
+            done
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Publish release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.tag.outputs.name }}
           name: ${{ steps.tag.outputs.name }}
           generate_release_notes: true
-          fail_on_unmatched_files: true
-          files: |
-            release/*.tar.xz
-            release/*.zip
-            release/SHA256SUMS
+          fail_on_unmatched_files: false
+          files: ${{ steps.files.outputs.list }}
