@@ -186,37 +186,50 @@ PYEOF
 # Torque's assumption universally. The change is a no-op on Linux
 # (sizeof was already 76 due to inherited alignment).
 run_py_patch \
-  "object-macros.h: V8_ABSTRACT_OBJECT_PUSH pack(4)" \
+  "object-macros.h: V8_ABSTRACT_OBJECT_PUSH pack(4) + silence -Wpadded" \
   "$V8_DIR/src/objects/object-macros.h" \
   "// libv8: V8_ABSTRACT_OBJECT_PUSH pack(4) to match Torque" <<'PYEOF'
 import pathlib, re, sys
 p = pathlib.Path(sys.argv[1])
 src = p.read_text(encoding="utf-8")
 
-# Replace pack(1) → pack(4) only within the V8_ABSTRACT_OBJECT_PUSH
-# macro definitions. There are typically two (gcc/clang vs MSVC); patch
-# both, since Torque's assumption is global.
+# Two coupled changes inside V8_ABSTRACT_OBJECT_PUSH (in both gcc/clang
+# and MSVC branches):
+#   1. pack(1) → pack(4)   matches Torque's universal pack(4) assumption
+#   2. error "-Wpadded" → ignored "-Wpadded" (gcc/clang) /
+#      default : 4820   →  disable : 4820   (MSVC)
+#      Abstract classes are never instantiated standalone, so trailing
+#      padding added by pack(4) is legitimate — silence the diagnostic.
 patterns = [
-    # gcc/clang branch: _Pragma("pack(1)")
+    # gcc/clang: pack(1) → pack(4)
     (r'(#define\s+V8_ABSTRACT_OBJECT_PUSH[^\n]*\\\n\s*_Pragma\("pack\(push\)"\)\s+_Pragma\(")pack\(1\)("\))',
      r'\1pack(4)\2'),
-    # MSVC branch: __pragma(pack(1))
+    # MSVC: pack(1) → pack(4)
     (r'(#define\s+V8_ABSTRACT_OBJECT_PUSH[^\n]*\\\n\s*__pragma\(pack\(push\)\)\s+__pragma\()pack\(1\)(\))',
      r'\1pack(4)\2'),
+    # gcc/clang: -Wpadded error → ignored, but only within V8_ABSTRACT_OBJECT_PUSH
+    (r'(#define\s+V8_ABSTRACT_OBJECT_PUSH(?:[^\n]|\\\n)*?_Pragma\("GCC diagnostic )error( \\"-Wpadded\\""\))',
+     r'\1ignored\2'),
+    # MSVC: warning 4820 default → disable, only within V8_ABSTRACT_OBJECT_PUSH
+    (r'(#define\s+V8_ABSTRACT_OBJECT_PUSH(?:[^\n]|\\\n)*?__pragma\(warning\()default( : 4820\)\))',
+     r'\1disable\2'),
 ]
 n = 0
 for pat, repl in patterns:
     src, k = re.subn(pat, repl, src)
     n += k
 if n == 0:
-    sys.exit("object-macros.h: no V8_ABSTRACT_OBJECT_PUSH pack(1) match")
+    sys.exit("object-macros.h: no V8_ABSTRACT_OBJECT_PUSH patterns matched")
 
 header = (
     "// libv8: V8_ABSTRACT_OBJECT_PUSH pack(4) to match Torque\n"
     "// (V8 14.9 ExtendedMap inherits as pack(1) but Torque computes\n"
     "// kSize assuming pack(4); MS ABI honours pack(1) strictly,\n"
     "// breaking JSInterceptorMap field-offset static_asserts on\n"
-    "// windows-x64 clang-cl. No-op on Itanium ABI Linux/macOS.)\n"
+    "// windows-x64 clang-cl. No-op on Itanium ABI Linux/macOS.\n"
+    "// Also silence -Wpadded inside abstract classes since pack(4)\n"
+    "// legitimately adds trailing padding to never-instantiated\n"
+    "// abstract bases.)\n"
 )
 # Place the header comment right before the first V8_ABSTRACT_OBJECT_PUSH
 # define so the sentinel grep finds it.
