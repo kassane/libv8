@@ -155,6 +155,22 @@ jobs:
           git config --global depot-tools.allowGlobalGitConfig true
           "DEPOT_TOOLS_WIN_TOOLCHAIN=0" | Out-File -FilePath $env:GITHUB_ENV -Append
 
+          # V8 14.9's build/vs_toolchain.py requires the "Debugging Tools for
+          # Windows" SDK feature (run #22 PR comment: dbghelp.dll missing at
+          # Windows Kits\10\Debuggers\x64\). windows-latest and
+          # windows-11-arm both ship the SDK without that component.
+          # Install via the official Windows 11 SDK 26100 setup with
+          # /features OptionId.WindowsDesktopDebuggers.
+          $ProgressPreference = 'SilentlyContinue'
+          $sdk = "$env:RUNNER_TEMP\winsdksetup.exe"
+          Invoke-WebRequest `
+            -Uri 'https://go.microsoft.com/fwlink/?linkid=2286561' `
+            -OutFile $sdk
+          Start-Process -Wait -FilePath $sdk -ArgumentList @(
+            '/features', 'OptionId.WindowsDesktopDebuggers',
+            '/quiet', '/norestart'
+          )
+
       - name: Cache compiler outputs
         uses: actions/cache@v5
         with:
