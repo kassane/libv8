@@ -268,4 +268,54 @@ src = src.replace(old, new, 1)
 p.write_text(src, encoding="utf-8")
 PYEOF
 
+# ----------------------------------------------------------------------------
+# Patch 7: src/objects/simd.cc — disable NEON64 fast path on gcc-arm64.
+#
+# V8 14.9's ArrayBufferFromHex / Uint8ArrayFromHex have NEON and SVE
+# optimised fast paths gated on `#define NEON64`. Both fail on gcc-14:
+#
+#   * NEON path passes uint8x16_t where vmovn_u16 wants uint16x8_t and
+#     similar implicit conversions — clang allows these, gcc enforces
+#     strict typing of NEON intrinsics.
+#   * SVE path uses `TARGET_SVE` attribute on functions that call SVE
+#     intrinsics, but gcc requires `-march=armv8-a+sve` etc to enable
+#     the ISA; the build doesn't pass it, so SVE intrinsics are
+#     rejected with "requires the SVE ISA extension".
+#
+# Guard the `#define NEON64` block so it only activates on clang (or
+# MSVC). gcc-arm64 falls back to the scalar implementation, which
+# compiles and is functionally correct (just slower on hex conversion).
+run_py_patch \
+  "simd.cc: skip NEON fast path on gcc-arm64" \
+  "$V8_DIR/src/objects/simd.cc" \
+  "// libv8: skip NEON fast path on gcc-arm64" <<'PYEOF'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+src = p.read_text(encoding="utf-8")
+old = (
+    "#ifdef V8_HOST_ARCH_ARM64\n"
+    "// We use Neon only on 64-bit ARM (because on 32-bit, some instructions and some\n"
+    "// types are not available). Note that ARM64 is guaranteed to have Neon.\n"
+    "#define NEON64\n"
+    "#include <arm_neon.h>\n"
+    "#endif"
+)
+new = (
+    "// libv8: skip NEON fast path on gcc-arm64 — V8 14.9's intrinsic\n"
+    "// type usage compiles on clang but trips strict gcc-14 typing for\n"
+    "// vmovn_u16/vshlq_n_u64, and the SVE path needs -march flags gcc\n"
+    "// isn't given. Scalar fallback is functionally correct.\n"
+    "#if defined(V8_HOST_ARCH_ARM64) && \\\n"
+    "    !(defined(__GNUC__) && !defined(__clang__))\n"
+    "// We use Neon only on 64-bit ARM (because on 32-bit, some instructions and some\n"
+    "// types are not available). Note that ARM64 is guaranteed to have Neon.\n"
+    "#define NEON64\n"
+    "#include <arm_neon.h>\n"
+    "#endif"
+)
+if old not in src:
+    sys.exit("simd.cc: NEON64 gate block not found")
+p.write_text(src.replace(old, new, 1), encoding="utf-8")
+PYEOF
+
 log "patch-v8.sh: done"
