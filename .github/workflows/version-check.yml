@@ -1,0 +1,68 @@
+name: version-check
+
+# Fully automated upstream tracking:
+#   - runs weekly (and on demand)
+#   - if upstream V8 has a newer tag than ./VERSION, bumps VERSION on main,
+#     pushes a matching git tag, which triggers release.yml to build + publish.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Mondays 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      force_tag:
+        description: 'Force-tag even if VERSION is unchanged'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      outdated: ${{ steps.check.outputs.outdated }}
+      latest:   ${{ steps.check.outputs.latest }}
+      current:  ${{ steps.check.outputs.current }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Use a PAT (or default token) that can push tags + commits to main.
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - id: check
+        run: ./scripts/check-version.sh
+
+  bump:
+    needs: check
+    if: needs.check.outputs.outdated == 'true' || inputs.force_tag == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Bump VERSION
+        if: needs.check.outputs.outdated == 'true'
+        run: |
+          echo "${{ needs.check.outputs.latest }}" > VERSION
+          git config user.name  "libv8-bot"
+          git config user.email "libv8-bot@users.noreply.github.com"
+          git add VERSION
+          git commit -m "chore: bump V8 to ${{ needs.check.outputs.latest }}"
+          git push origin HEAD:main
+
+      - name: Tag release
+        run: |
+          TAG="v$(head -n1 VERSION | tr -d '[:space:]')"
+          git config user.name  "libv8-bot"
+          git config user.email "libv8-bot@users.noreply.github.com"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "tag $TAG already exists, skipping"
+          else
+            git tag -a "$TAG" -m "Auto-release for V8 $TAG"
+            git push origin "$TAG"
+          fi

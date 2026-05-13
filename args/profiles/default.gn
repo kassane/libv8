@@ -1,0 +1,5 @@
+# Default profile: smallest embedder-friendly build, no sandbox,
+# no pointer compression, no ICU. Matches the lowest common denominator
+# expected by most language bindings.
+v8_enable_pointer_compression = false
+v8_enable_sandbox = false

@@ -1,0 +1,32 @@
+# Base GN args shared across every target. Mirrors just-js/v8's proven args
+# (the closest working reference for modern V8 14.x); per-target files and
+# profile files override these as needed.
+
+is_debug = false
+is_component_build = false
+v8_monolithic = true
+v8_use_external_startup_data = false
+
+# Rust is enabled by default in modern V8 and would pull a prebuilt rust
+# toolchain that depot_tools does not always ship for every host arch. We
+# don't use any Rust-backed components from the monolith, so disable it.
+enable_rust = false
+
+is_clang = true
+clang_use_chrome_plugins = false
+dcheck_always_on = false
+use_custom_libcxx = false
+use_rtti = false
+
+symbol_level = 0
+strip_debug_info = true
+treat_warnings_as_errors = false
+
+v8_enable_i18n_support = false
+v8_enable_test_features = false
+v8_enable_gdbjit = false
+v8_enable_backtrace = false
+v8_enable_snapshot_compression = false
+v8_enable_temporal_support = false
+v8_deprecation_warnings = false
+v8_imminent_deprecation_warnings = false

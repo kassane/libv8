@@ -1,0 +1,229 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'VERSION'
+      - 'args/**'
+      - 'scripts/**'
+      - '.gclient'
+      - '.github/workflows/build.yml'
+      - '.github/actions/**'
+  pull_request:
+    paths:
+      - 'VERSION'
+      - 'args/**'
+      - 'scripts/**'
+      - '.gclient'
+      - '.github/workflows/build.yml'
+      - '.github/actions/**'
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: 'Build profile'
+        required: false
+        default: 'default'
+        type: choice
+        options: [default, pointer-compression, sandbox, i18n]
+      runners:
+        description: 'Which runner tiers to include'
+        required: false
+        default: 'all'
+        type: choice
+        options: [all, free-only]
+  workflow_call:
+    inputs:
+      profile:
+        description: 'Build profile'
+        required: false
+        default: 'default'
+        type: string
+      runners:
+        description: 'Which runner tiers to include (all | free-only)'
+        required: false
+        default: 'all'
+        type: string
+      upload_artifacts:
+        description: 'Whether to upload archives as workflow artifacts'
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  group: build-${{ github.ref }}-${{ inputs.profile || 'default' }}-${{ inputs.runners || 'all' }}
+  cancel-in-progress: true
+
+jobs:
+  matrix:
+    # GitHub Actions does not allow referencing matrix.* in job-level if:,
+    # so we generate the matrix dynamically based on the `runners` input.
+    runs-on: ubuntu-latest
+    outputs:
+      include: ${{ steps.gen.outputs.include }}
+    steps:
+      - id: gen
+        shell: bash
+        env:
+          RUNNERS: ${{ inputs.runners || 'all' }}
+        run: |
+          free='[
+            {"target":"linux-x64","runner":"ubuntu-22.04","optional":false}
+          ]'
+          paid='[
+            {"target":"macos-arm64","runner":"macos-latest","optional":true}
+          ]'
+          if [[ "$RUNNERS" == "free-only" ]]; then
+            include=$(jq -c <<<"$free")
+          else
+            include=$(jq -c --argjson a "$free" --argjson b "$paid" -n '$a + $b')
+          fi
+          echo "include=$include" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: matrix
+    name: ${{ matrix.target }} (${{ inputs.profile || 'default' }})
+    runs-on: ${{ matrix.runner }}
+    # macOS/Windows runners are billed; the matrix job marks them optional
+    # so that a billing block or paid-runner outage does NOT fail the whole
+    # workflow. Code regressions on Linux (free tier) still hard-fail PRs.
+    continue-on-error: ${{ matrix.optional }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.matrix.outputs.include) }}
+    env:
+      PROFILE: ${{ inputs.profile || 'default' }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Read V8 version
+        id: ver
+        shell: bash
+        run: echo "v8=$(head -n1 VERSION | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ccache pkg-config xz-utils lsb-release sudo curl
+          # Make ccache the transparent default for any tool invocation,
+          # the way kuoruan/libv8's Linux composite action does it.
+          sudo update-ccache-symlinks
+          echo "/usr/lib/ccache" >> "$GITHUB_PATH"
+          echo "CCACHE_DIR=$GITHUB_WORKSPACE/.ccache" >> "$GITHUB_ENV"
+          echo "CC_WRAPPER=ccache" >> "$GITHUB_ENV"
+
+      - name: Install macOS build deps
+        if: runner.os == 'macOS'
+        run: |
+          brew install ccache xz
+          echo "CC_WRAPPER=ccache" >> "$GITHUB_ENV"
+
+      - name: Cache compiler outputs
+        uses: actions/cache@v5
+        with:
+          path: |
+            .ccache
+            .sccache
+          key: cc-${{ matrix.target }}-${{ env.PROFILE }}-${{ steps.ver.outputs.v8 }}-${{ github.run_id }}
+          restore-keys: |
+            cc-${{ matrix.target }}-${{ env.PROFILE }}-${{ steps.ver.outputs.v8 }}-
+            cc-${{ matrix.target }}-${{ env.PROFILE }}-
+            cc-${{ matrix.target }}-
+
+      - uses: ./.github/actions/setup-depot-tools
+
+      - name: Fetch V8 source
+        shell: bash
+        run: ./scripts/fetch.sh
+
+      - name: Install V8 system build deps (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          # V8 ships a canonical apt installer at build/install-build-deps.sh
+          # that pulls in libstdc++, glib, font/X11 stubs, etc. Without it
+          # the default ubuntu-22.04 image is missing several headers GN/
+          # ninja need (matches just-js/v8's CI).
+          if [[ -x v8/build/install-build-deps.sh ]]; then
+            sudo v8/build/install-build-deps.sh \
+              --no-prompt --no-chromeos-fonts --no-nacl || true
+          fi
+
+      - name: Toolchain versions
+        shell: bash
+        run: |
+          set +e
+          echo "::group::tool versions"
+          python3 --version
+          (cd v8 && gn --version) || true
+          (cd v8 && ninja --version) || true
+          clang --version || true
+          cc --version || true
+          uname -a
+          echo "::endgroup::"
+
+      - name: Build
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p logs
+          ./scripts/build.sh ${{ matrix.target }} ${{ env.PROFILE }} \
+            2>&1 | tee logs/build-${{ matrix.target }}-${{ env.PROFILE }}.log
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: buildlog-${{ matrix.target }}-${{ env.PROFILE }}
+          path: |
+            logs/
+            v8/out/${{ matrix.target }}.${{ env.PROFILE }}/args.gn
+            v8/out/${{ matrix.target }}.${{ env.PROFILE }}/args.resolved.txt
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Surface build log to run summary on failure
+        if: failure()
+        shell: bash
+        run: |
+          LOG="logs/build-${{ matrix.target }}-${{ env.PROFILE }}.log"
+          {
+            echo "## Build failure: ${{ matrix.target }} (${{ env.PROFILE }})"
+            echo ""
+            if [[ -f "$LOG" ]]; then
+              echo "### Last 200 lines of build log"
+              echo '```'
+              tail -n 200 "$LOG"
+              echo '```'
+            else
+              echo "_(no $LOG produced — failed before Build step ran)_"
+            fi
+            echo ""
+            if [[ -f "v8/out/${{ matrix.target }}.${{ env.PROFILE }}/args.gn" ]]; then
+              echo "### Effective args.gn"
+              echo '```'
+              cat "v8/out/${{ matrix.target }}.${{ env.PROFILE }}/args.gn"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Package
+        shell: bash
+        run: ./scripts/package.sh ${{ matrix.target }} ${{ env.PROFILE }}
+
+      - name: Upload artifact
+        if: ${{ inputs.upload_artifacts != false }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: libv8-${{ steps.ver.outputs.v8 }}-${{ matrix.target }}-${{ env.PROFILE }}
+          path: |
+            dist/libv8-*-${{ matrix.target }}-${{ env.PROFILE }}.*
+          if-no-files-found: error
+          retention-days: 14
