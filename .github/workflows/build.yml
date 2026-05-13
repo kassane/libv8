@@ -119,17 +119,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            ccache pkg-config xz-utils lsb-release sudo curl wget gnupg
-          # On linux-arm64 also install a recent LLVM via apt.llvm.org.
-          # V8 14.9 emits clang-19+ flags (see run #22 log:
-          # -fdiagnostics-show-inlining-chain, -fno-lifetime-dse,
-          # -fsanitize-ignore-for-ubsan-feature=*), which Ubuntu 22.04's
-          # default clang-14 rejects. The official llvm.sh handles the
-          # apt-key + repo setup on aarch64 cleanly.
+            ccache pkg-config xz-utils lsb-release sudo curl
+          # On linux-arm64 we build with system gcc (see args/linux.arm64.gn
+          # for why). gcc-12 provides the C++20 features V8 14.9 needs.
           if [[ "$(uname -m)" == "aarch64" ]]; then
-            wget -q https://apt.llvm.org/llvm.sh -O /tmp/llvm.sh
-            chmod +x /tmp/llvm.sh
-            sudo /tmp/llvm.sh 19 all
+            sudo apt-get install -y --no-install-recommends \
+              gcc-12 g++-12 binutils
+            sudo update-alternatives \
+              --install /usr/bin/gcc gcc /usr/bin/gcc-12 60 \
+              --slave   /usr/bin/g++ g++ /usr/bin/g++-12
           fi
           # Make ccache the transparent default for any tool invocation,
           # the way kuoruan/libv8's Linux composite action does it.
@@ -214,48 +212,9 @@ jobs:
           (cd v8 && gn --version) || true
           (cd v8 && ninja --version) || true
           clang --version || true
+          gcc --version || true
           cc --version || true
           uname -a
-          echo "::endgroup::"
-
-      - name: Shim bundled clang on linux-aarch64
-        if: matrix.target == 'linux-arm64'
-        shell: bash
-        run: |
-          # V8 DEPS hooks download an x86_64 prebuilt clang into
-          # v8/third_party/llvm-build/Release+Asserts/bin/ even on aarch64
-          # hosts. Verified via run #21: ccache reports 'Exec format error'
-          # when ninja invokes that binary. Replace each tool with a symlink
-          # to the apt.llvm.org clang-19 binaries (V8 14.9 needs clang-19+
-          # flags — see run #22's '-fdiagnostics-show-inlining-chain' etc.
-          # errors against Ubuntu 22.04's default clang-14).
-          BUNDLED="v8/third_party/llvm-build/Release+Asserts/bin"
-          mkdir -p "$BUNDLED"
-          # Map each tool to its versioned counterpart on the system.
-          declare -A MAP=(
-            [clang]=clang-19
-            [clang++]=clang++-19
-            [clang-cl]=clang-cl-19
-            [ld.lld]=ld.lld-19
-            [lld]=lld-19
-            [lld-link]=lld-link-19
-            [llvm-ar]=llvm-ar-19
-            [llvm-nm]=llvm-nm-19
-            [llvm-objcopy]=llvm-objcopy-19
-            [llvm-objdump]=llvm-objdump-19
-            [llvm-readobj]=llvm-readobj-19
-            [llvm-strip]=llvm-strip-19
-            [llvm-symbolizer]=llvm-symbolizer-19
-          )
-          for tool in "${!MAP[@]}"; do
-            SYS="$(command -v "${MAP[$tool]}" 2>/dev/null || true)"
-            if [[ -n "$SYS" ]]; then
-              ln -sf "$SYS" "$BUNDLED/$tool"
-              echo "  $BUNDLED/$tool -> $SYS"
-            fi
-          done
-          echo "::group::clang version after shim"
-          "$BUNDLED/clang" --version || true
           echo "::endgroup::"
 
       - name: Build
