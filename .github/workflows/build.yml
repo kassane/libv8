@@ -196,6 +196,30 @@ jobs:
           uname -a
           echo "::endgroup::"
 
+      - name: Shim bundled clang on linux-aarch64
+        if: matrix.target == 'linux-arm64'
+        shell: bash
+        run: |
+          # V8 DEPS hooks download an x86_64 prebuilt clang into
+          # v8/third_party/llvm-build/Release+Asserts/bin/ even on aarch64
+          # hosts. Verified via run #21: ccache reports 'Exec format error'
+          # when ninja invokes that binary. Replace each tool with a symlink
+          # to the apt-installed aarch64-native clang so V8's expected
+          # directory layout stays intact.
+          BUNDLED="v8/third_party/llvm-build/Release+Asserts/bin"
+          if [[ -d "$BUNDLED" ]] && ! "$BUNDLED/clang" --version >/dev/null 2>&1; then
+            echo "Bundled clang is non-executable on this host; shimming to system clang."
+            for tool in clang clang++ clang-cl ld.lld lld lld-link llvm-ar \
+                        llvm-nm llvm-objcopy llvm-objdump llvm-readobj \
+                        llvm-strip llvm-symbolizer; do
+              SYS="$(command -v "$tool" 2>/dev/null || true)"
+              if [[ -n "$SYS" ]]; then
+                ln -sf "$SYS" "$BUNDLED/$tool"
+                echo "  $BUNDLED/$tool -> $SYS"
+              fi
+            done
+          fi
+
       - name: Build
         shell: bash
         run: |

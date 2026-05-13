@@ -4,4 +4,3 @@ v8_target_cpu = "arm64"
 
 use_sysroot = false
 use_lld = false
-use_gold = false
