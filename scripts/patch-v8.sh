@@ -186,57 +186,63 @@ PYEOF
 # Torque's assumption universally. The change is a no-op on Linux
 # (sizeof was already 76 due to inherited alignment).
 run_py_patch \
-  "object-macros.h: V8_ABSTRACT_OBJECT_PUSH pack(4) + silence -Wpadded" \
+  "object-macros.h: V8_ABSTRACT_OBJECT_PUSH pack(4) on MS ABI only" \
   "$V8_DIR/src/objects/object-macros.h" \
-  "// libv8: V8_ABSTRACT_OBJECT_PUSH pack(4) to match Torque" <<'PYEOF'
+  "// libv8: V8_ABSTRACT_OBJECT_PUSH pack(4) on MS ABI only" <<'PYEOF'
 import pathlib, re, sys
 p = pathlib.Path(sys.argv[1])
 src = p.read_text(encoding="utf-8")
 
-# Two coupled changes inside V8_ABSTRACT_OBJECT_PUSH (in both gcc/clang
-# and MSVC branches):
-#   1. pack(1) → pack(4)   matches Torque's universal pack(4) assumption
-#   2. error "-Wpadded" → ignored "-Wpadded" (gcc/clang) /
-#      default : 4820   →  disable : 4820   (MSVC)
-#      Abstract classes are never instantiated standalone, so trailing
-#      padding added by pack(4) is legitimate — silence the diagnostic.
-patterns = [
-    # gcc/clang: pack(1) → pack(4)
-    (r'(#define\s+V8_ABSTRACT_OBJECT_PUSH[^\n]*\\\n\s*_Pragma\("pack\(push\)"\)\s+_Pragma\(")pack\(1\)("\))',
-     r'\1pack(4)\2'),
-    # MSVC: pack(1) → pack(4)
-    (r'(#define\s+V8_ABSTRACT_OBJECT_PUSH[^\n]*\\\n\s*__pragma\(pack\(push\)\)\s+__pragma\()pack\(1\)(\))',
-     r'\1pack(4)\2'),
-    # gcc/clang: -Wpadded error → ignored, but only within V8_ABSTRACT_OBJECT_PUSH
-    (r'(#define\s+V8_ABSTRACT_OBJECT_PUSH(?:[^\n]|\\\n)*?_Pragma\("GCC diagnostic )error( \\"-Wpadded\\""\))',
-     r'\1ignored\2'),
-    # MSVC: warning 4820 default → disable, only within V8_ABSTRACT_OBJECT_PUSH
-    (r'(#define\s+V8_ABSTRACT_OBJECT_PUSH(?:[^\n]|\\\n)*?__pragma\(warning\()default( : 4820\)\))',
-     r'\1disable\2'),
-]
+# Strategy: replace the gcc/clang-branch V8_ABSTRACT_OBJECT_PUSH macro
+# with a #if defined(_MSC_VER)/#else pair. clang-cl is the only thing
+# that defines both __clang__ and _MSC_VER, so this picks up the MS ABI
+# path used by windows-x64 while leaving regular gcc / clang (Linux,
+# macOS) on the upstream pack(1) + -Werror=padded behaviour.
+gcc_clang_re = re.compile(
+    r'#define\s+V8_ABSTRACT_OBJECT_PUSH\s*\\\n'
+    r'\s*_Pragma\("pack\(push\)"\)\s+_Pragma\("pack\(1\)"\)\s+'
+    r'_Pragma\("GCC diagnostic push"\)\s*\\\n'
+    r'\s*_Pragma\("GCC diagnostic error \\"-Wpadded\\""\)'
+)
+gcc_clang_replacement = (
+    "// libv8: V8_ABSTRACT_OBJECT_PUSH pack(4) on MS ABI only\n"
+    "// (clang-cl matches the gcc/clang branch because __clang__ is\n"
+    "// defined, but MS ABI honours pack(1) strictly and gives\n"
+    "// sizeof(ExtendedMap)=73 instead of Torque's 76. Itanium ABI\n"
+    "// (Linux/macOS gcc/clang) already gives the right size via\n"
+    "// inheritance-driven alignment, so leave pack(1) alone there.)\n"
+    "#if defined(_MSC_VER)\n"
+    "#define V8_ABSTRACT_OBJECT_PUSH                                           \\\n"
+    "  _Pragma(\"pack(push)\") _Pragma(\"pack(4)\") _Pragma(\"GCC diagnostic push\") \\\n"
+    "      _Pragma(\"GCC diagnostic ignored \\\"-Wpadded\\\"\")\n"
+    "#else\n"
+    "#define V8_ABSTRACT_OBJECT_PUSH                                           \\\n"
+    "  _Pragma(\"pack(push)\") _Pragma(\"pack(1)\") _Pragma(\"GCC diagnostic push\") \\\n"
+    "      _Pragma(\"GCC diagnostic error \\\"-Wpadded\\\"\")\n"
+    "#endif"
+)
+
+# Pure-MSVC branch (no __clang__): keep pack(4) since MS ABI needs it
+# and the silencing of warning 4820 is harmless.
+msvc_re = re.compile(
+    r'#define\s+V8_ABSTRACT_OBJECT_PUSH\s*\\\n'
+    r'\s*__pragma\(pack\(push\)\)\s+__pragma\(pack\(1\)\)\s+'
+    r'__pragma\(warning\(push\)\)\s*\\\n'
+    r'\s*__pragma\(warning\(default : 4820\)\)'
+)
+msvc_replacement = (
+    "#define V8_ABSTRACT_OBJECT_PUSH                                  \\\n"
+    "  __pragma(pack(push)) __pragma(pack(4)) __pragma(warning(push)) \\\n"
+    "      __pragma(warning(disable : 4820))"
+)
+
 n = 0
-for pat, repl in patterns:
-    src, k = re.subn(pat, repl, src)
-    n += k
+src, k = gcc_clang_re.subn(gcc_clang_replacement, src, count=1)
+n += k
+src, k = msvc_re.subn(msvc_replacement, src, count=1)
+n += k
 if n == 0:
     sys.exit("object-macros.h: no V8_ABSTRACT_OBJECT_PUSH patterns matched")
-
-header = (
-    "// libv8: V8_ABSTRACT_OBJECT_PUSH pack(4) to match Torque\n"
-    "// (V8 14.9 ExtendedMap inherits as pack(1) but Torque computes\n"
-    "// kSize assuming pack(4); MS ABI honours pack(1) strictly,\n"
-    "// breaking JSInterceptorMap field-offset static_asserts on\n"
-    "// windows-x64 clang-cl. No-op on Itanium ABI Linux/macOS.\n"
-    "// Also silence -Wpadded inside abstract classes since pack(4)\n"
-    "// legitimately adds trailing padding to never-instantiated\n"
-    "// abstract bases.)\n"
-)
-# Place the header comment right before the first V8_ABSTRACT_OBJECT_PUSH
-# define so the sentinel grep finds it.
-m = re.search(r"^#define\s+V8_ABSTRACT_OBJECT_PUSH", src, flags=re.MULTILINE)
-if not m:
-    sys.exit("object-macros.h: V8_ABSTRACT_OBJECT_PUSH define not found post-patch")
-src = src[:m.start()] + header + src[m.start():]
 p.write_text(src, encoding="utf-8")
 PYEOF
 
