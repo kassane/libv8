@@ -32,13 +32,36 @@ Supported targets:
 | OS      | Arch  | Runner                          | Status |
 |---------|-------|---------------------------------|--------|
 | Linux   | x64   | `ubuntu-22.04`                  | ✅ required |
-| Linux   | arm64 | `ubuntu-22.04-arm`              | optional |
+| Linux   | arm64 | `ubuntu-22.04-arm`              | optional (V8 14.9 blockers) |
 | macOS   | arm64 | `macos-latest`                  | optional |
-| Windows | x64   | `windows-latest` (Server 2025)  | optional |
-| Windows | arm64 | `windows-11-arm`                | optional |
+| Windows | x64   | `windows-latest` (Server 2025)  | optional (V8 14.9 blockers) |
+| Windows | arm64 | `windows-11-arm`                | optional (V8 14.9 blockers) |
 
 Optional targets run with `continue-on-error`, so a failure on them doesn't
 fail the workflow. Linux x64 is the only hard-required target.
+
+### Why three optional targets are flaky on V8 14.9
+
+Tracked through PR #2 with full failure logs:
+
+- **linux-arm64**: Chromium does not publish a `Linux_aarch64` prebuilt clang
+  at V8 14.9's pinned `llvmorg-23-init-10931-…` revision. The fallback
+  `is_clang=false` path is also blocked because V8 14.9 uses the clang-only
+  `__has_warning` preprocessor extension in `src/base/macros.h` without an
+  `__clang__` guard, so system gcc fails too. Revisit when V8 either ships
+  an aarch64 prebuilt clang or guards its clang-only preprocessor uses.
+
+- **windows-x64**: Build advances past `gn gen` and ~480/1663 compile
+  targets, then hits a V8-internal Torque vs C++ field-offset mismatch
+  (`kOwnerThreadIdOffset` in `JSAtomicsMutex` resolves to 40 in Torque
+  but 36 in C++). Likely a `cppgc_enable_pointer_compression` /
+  `v8_enable_pointer_compression` consistency bug on Windows MSVC.
+
+- **windows-arm64**: `vs_toolchain.py copy_dlls` requires Windows 10 SDK
+  10.0.26100 with the *x64* Debugging Tools subset. Even after installing
+  the SDK with `OptionId.WindowsDesktopDebuggers` on the `windows-11-arm`
+  runner, only the arm64 cross-target Debuggers land — the SDK installer
+  behaves differently on ARM hosts.
 
 Build profiles (see `args/profiles/`):
 
