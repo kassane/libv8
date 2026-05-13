@@ -40,28 +40,32 @@ Supported targets:
 Optional targets run with `continue-on-error`, so a failure on them doesn't
 fail the workflow. Linux x64 is the only hard-required target.
 
-### Why three optional targets are flaky on V8 14.9
+### V8 14.9 source patches
 
-Tracked through PR #2 with full failure logs:
+The optional targets each hit a V8 14.9 source-level bug. `scripts/patch-v8.sh`
+applies three surgical, idempotent post-fetch patches:
 
-- **linux-arm64**: Chromium does not publish a `Linux_aarch64` prebuilt clang
-  at V8 14.9's pinned `llvmorg-23-init-10931-…` revision. The fallback
-  `is_clang=false` path is also blocked because V8 14.9 uses the clang-only
-  `__has_warning` preprocessor extension in `src/base/macros.h` without an
-  `__clang__` guard, so system gcc fails too. Revisit when V8 either ships
-  an aarch64 prebuilt clang or guards its clang-only preprocessor uses.
+- **`src/base/macros.h`** — wraps `__has_warning("-Wlifetime-safety")` and
+  `__has_warning("-Wreturn-stack-address")` in `defined(__clang__)` so gcc's
+  preprocessor doesn't choke on the clang-only extension (`linux-arm64` uses
+  gcc because Chromium ships no aarch64 prebuilt clang at V8 14.9's pinned
+  revision).
 
-- **windows-x64**: Build advances past `gn gen` and ~480/1663 compile
-  targets, then hits a V8-internal Torque vs C++ field-offset mismatch
-  (`kOwnerThreadIdOffset` in `JSAtomicsMutex` resolves to 40 in Torque
-  but 36 in C++). Likely a `cppgc_enable_pointer_compression` /
-  `v8_enable_pointer_compression` consistency bug on Windows MSVC.
+- **`build/vs_toolchain.py::_CopyDebugger`** — replaced with a no-op + log.
+  Upstream raises when host `Debuggers/x64/dbghelp.dll` is missing; the
+  `windows-11-arm` SDK installer delivers only arm64 Debugging Tools, and
+  the static V8 monolith doesn't load those DLLs anyway.
 
-- **windows-arm64**: `vs_toolchain.py copy_dlls` requires Windows 10 SDK
-  10.0.26100 with the *x64* Debugging Tools subset. Even after installing
-  the SDK with `OptionId.WindowsDesktopDebuggers` on the `windows-11-arm`
-  runner, only the arm64 cross-target Debuggers land — the SDK installer
-  behaves differently on ARM hosts.
+- **`src/objects/js-atomics-synchronization.h`** — forces
+  `alignas(uint64_t)` on `JSSynchronizationPrimitive` when
+  `TAGGED_SIZE_8_BYTES`. `V8_OBJECT`'s `pack(4)` caps class alignment at 4
+  on MSVC (gcc/clang honour `alignas` inside `pack`), so `sizeof` comes
+  out 4 bytes short of Torque's tagged-size-rounded computation — the
+  `JSAtomicsMutex::owner_thread_id_` and `JSAtomicsCondition::optional_padding_`
+  Torque/C++ offset `static_assert`s fail on `windows-x64`.
+
+Each patch carries a sentinel comment and silently skips if upstream
+matches (so a future V8 bump that fixes the bug doesn't fail this script).
 
 Build profiles (see `args/profiles/`):
 
