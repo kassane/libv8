@@ -227,4 +227,46 @@ src = src[:m.start()] + header + src[m.start():]
 p.write_text(src, encoding="utf-8")
 PYEOF
 
+# ----------------------------------------------------------------------------
+# Patch 5: src/base/flags.h — drop constexpr from defaulted operator==.
+#
+# Flags<EnumT, BitfieldT, BitfieldStorageT> is instantiated by V8 with
+# BitfieldStorageT = std::atomic<unsigned char> (the
+# IsolateExecutionModeFlag mask). The two defaulted comparison operators
+#   constexpr bool operator==(const Flags& flags) const = default;
+#   constexpr bool operator!=(const Flags& flags) const = default;
+# require the underlying mask_ comparison to be constexpr, but
+# std::atomic<T>::operator T() const is not constexpr in any libstdc++
+# (the C++20 standard doesn't require it). Clang/libc++ on linux-x64
+# instantiates the constexpr requirement lazily and never hits an
+# error because V8 never calls Flags::operator== in a constexpr
+# context; gcc instantiates eagerly and rejects the declaration.
+#
+# Dropping the constexpr keyword keeps the defaulted definition valid
+# under non-constexpr semantics. Any actual constexpr use of operator==
+# (none observed in V8 14.9) would have been ill-formed anyway.
+run_py_patch \
+  "flags.h: drop constexpr from defaulted operator==/!=" \
+  "$V8_DIR/src/base/flags.h" \
+  "// libv8: non-constexpr default operator== for std::atomic mask" <<'PYEOF'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+src = p.read_text(encoding="utf-8")
+patches = [
+    ("  constexpr bool operator==(const Flags& flags) const = default;",
+     "  // libv8: non-constexpr default operator== for std::atomic mask\n"
+     "  bool operator==(const Flags& flags) const = default;"),
+    ("  constexpr bool operator!=(const Flags& flags) const = default;",
+     "  bool operator!=(const Flags& flags) const = default;"),
+]
+applied = 0
+for old, new in patches:
+    if old in src:
+        src = src.replace(old, new, 1)
+        applied += 1
+if applied == 0:
+    sys.exit("flags.h: no defaulted constexpr operator==/!= found")
+p.write_text(src, encoding="utf-8")
+PYEOF
+
 log "patch-v8.sh: done"

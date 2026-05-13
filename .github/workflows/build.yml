@@ -122,9 +122,14 @@ jobs:
             ccache pkg-config xz-utils lsb-release sudo curl
           # On linux-arm64 we build with system gcc (see args/linux.arm64.gn
           # for why). gcc-12 provides the C++20 features V8 14.9 needs.
+          # libstdc++-12-dev is only a *Recommends* of g++-12, so it's
+          # skipped by --no-install-recommends — install it explicitly
+          # so the compiler picks up /usr/include/c++/12 instead of
+          # falling back to /usr/include/c++/11 (libstdc++-11 ships in
+          # the ubuntu-22.04-arm base image and gets used otherwise).
           if [[ "$(uname -m)" == "aarch64" ]]; then
             sudo apt-get install -y --no-install-recommends \
-              gcc-12 g++-12 binutils
+              gcc-12 g++-12 libstdc++-12-dev binutils
             sudo update-alternatives \
               --install /usr/bin/gcc gcc /usr/bin/gcc-12 60 \
               --slave   /usr/bin/g++ g++ /usr/bin/g++-12
