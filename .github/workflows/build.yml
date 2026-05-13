@@ -119,20 +119,25 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            ccache pkg-config xz-utils lsb-release sudo curl
+            ccache pkg-config xz-utils lsb-release sudo curl \
+            software-properties-common
           # On linux-arm64 we build with system gcc (see args/linux.arm64.gn
-          # for why). gcc-12 provides the C++20 features V8 14.9 needs.
-          # libstdc++-12-dev is only a *Recommends* of g++-12, so it's
-          # skipped by --no-install-recommends — install it explicitly
-          # so the compiler picks up /usr/include/c++/12 instead of
-          # falling back to /usr/include/c++/11 (libstdc++-11 ships in
-          # the ubuntu-22.04-arm base image and gets used otherwise).
+          # for why). gcc-12 from the ubuntu-22.04 base repos has incomplete
+          # C++20 conformance for the patterns V8 14.9 emits (ambiguous
+          # NewConsString partial-ordering, deleted-default-ctor from
+          # unions with constexpr-but-non-trivial members, etc). gcc-14
+          # resolves all of them; pull it from the toolchain-test PPA
+          # which carries arm64 builds. libstdc++-14-dev is the matching
+          # standard library (also brings the C++23 constexpr atomic
+          # improvements clang/libc++ already had).
           if [[ "$(uname -m)" == "aarch64" ]]; then
+            sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+            sudo apt-get update
             sudo apt-get install -y --no-install-recommends \
-              gcc-12 g++-12 libstdc++-12-dev binutils
+              gcc-14 g++-14 libstdc++-14-dev binutils
             sudo update-alternatives \
-              --install /usr/bin/gcc gcc /usr/bin/gcc-12 60 \
-              --slave   /usr/bin/g++ g++ /usr/bin/g++-12
+              --install /usr/bin/gcc gcc /usr/bin/gcc-14 60 \
+              --slave   /usr/bin/g++ g++ /usr/bin/g++-14
           fi
           # Make ccache the transparent default for any tool invocation,
           # the way kuoruan/libv8's Linux composite action does it.
