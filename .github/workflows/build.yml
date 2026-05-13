@@ -130,6 +130,13 @@ jobs:
           # which carries arm64 builds. libstdc++-14-dev is the matching
           # standard library (also brings the C++23 constexpr atomic
           # improvements clang/libc++ already had).
+          #
+          # V8's build invokes the compiler as `aarch64-linux-gnu-g++`
+          # (the cross-compile-prefixed alias) even on native arm64,
+          # so update-alternatives has to redirect THAT name — not just
+          # `gcc`/`g++` — otherwise the build silently falls back to the
+          # base image's gcc-11 and we see "unrecognized command-line
+          # option -Wno-dangling-pointer" (a flag gcc-12+ introduced).
           if [[ "$(uname -m)" == "aarch64" ]]; then
             sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
             sudo apt-get update
@@ -138,6 +145,14 @@ jobs:
             sudo update-alternatives \
               --install /usr/bin/gcc gcc /usr/bin/gcc-14 60 \
               --slave   /usr/bin/g++ g++ /usr/bin/g++-14
+            sudo update-alternatives \
+              --install /usr/bin/aarch64-linux-gnu-gcc aarch64-linux-gnu-gcc \
+                /usr/bin/gcc-14 60 \
+              --slave   /usr/bin/aarch64-linux-gnu-g++ aarch64-linux-gnu-g++ \
+                /usr/bin/g++-14
+            # Verify the cross-prefix binary really resolves to gcc-14
+            # (catches PPA install failures + missing alternatives).
+            aarch64-linux-gnu-g++ --version
           fi
           # Make ccache the transparent default for any tool invocation,
           # the way kuoruan/libv8's Linux composite action does it.
