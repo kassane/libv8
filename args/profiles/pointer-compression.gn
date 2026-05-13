@@ -1,3 +1,13 @@
 # Pointer compression enabled. Callers MUST be compiled with the same flag.
 v8_enable_pointer_compression = true
 v8_enable_sandbox = false
+
+# When pointer compression is on, V8 enables partition_alloc's allocator
+# shim (CPPGC_POINTER_COMPRESSION), which forward-declares the global
+# operator new / operator delete overloads with default visibility.
+# macOS 15.5 SDK's libc++ (Xcode 16.4+) declares those same operators
+# with hidden visibility, so clang errors with "visibility does not
+# match previous declaration" against system libc++. Linking V8's own
+# bundled libc++ here keeps the declarations consistent across all
+# translation units.
+use_custom_libcxx = true
