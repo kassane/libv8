@@ -72,14 +72,17 @@ jobs:
         env:
           RUNNERS: ${{ inputs.runners || 'all' }}
         run: |
+          # Windows targets disabled in the matrix: V8 14.9 has an MS ABI
+          # strict-pack / Torque-kSize mismatch in ExtendedMap that no
+          # portable C++ attribute can fix from outside the Torque tool.
+          # Tracked separately; re-enable individually once a Torque-side
+          # patch is ready.
           free='[
             {"target":"linux-x64","runner":"ubuntu-22.04","optional":false},
             {"target":"linux-arm64","runner":"ubuntu-22.04-arm","optional":true}
           ]'
           paid='[
-            {"target":"macos-arm64","runner":"macos-latest","optional":true},
-            {"target":"windows-x64","runner":"windows-latest","optional":true},
-            {"target":"windows-arm64","runner":"windows-11-arm","optional":true}
+            {"target":"macos-arm64","runner":"macos-latest","optional":true}
           ]'
           if [[ "$RUNNERS" == "free-only" ]]; then
             include=$(jq -c <<<"$free")

@@ -120,49 +120,23 @@ p.write_text(src[:start] + body + src[end:], encoding="utf-8")
 PYEOF
 
 # ----------------------------------------------------------------------------
-# Patch 3: src/objects/js-atomics-synchronization.h — explicit trailing
-# padding member on JSSynchronizationPrimitive.
+# Patch 3: [REVERTED — broke linux-x64 mksnapshot]
 #
-# Torque computes its kHeaderSize for JSSynchronizationPrimitive with
-# tagged-size (8 byte) class alignment rounding: 24 (JSObject header) +
-# 8 (waiter_queue_head_) + 4 (state_) → rounded up to 40 → places
-# subclass fields at offset 40. C++ under V8_OBJECT's pack(4) lays the
-# class out without trailing padding (sizeof = 36), and the C++ Itanium
-# ABI lets derived classes reuse trailing tail padding of non-POD
-# bases — so JSAtomicsMutex::owner_thread_id_ lands at 36, contradicting
-# Torque's 40. (Same for JSAtomicsCondition::optional_padding_.) An
-# alignas on the class fixes sizeof but doesn't disable tail-padding
-# reuse, so the offsets stay wrong.
+# A previous version added an explicit uint32_t libv8_base_pad_ to
+# JSSynchronizationPrimitive to bump sizeof from 36 to 40 so derived
+# classes (JSAtomicsMutex, JSAtomicsCondition) wouldn't land
+# `owner_thread_id_` / `optional_padding_` in the base's tail padding.
+# That fixed the Torque/C++ offset static_assert on windows-x64 and
+# linux-arm64, but it grew sizeof(JSAtomicsMutex) from 40 to 44 on
+# linux-x64 clang — which trips mksnapshot's runtime check
+# `IsAligned(size_in_bytes, kTaggedSize)` (44 % 8 != 0).
 #
-# Adding an *explicit* uint32_t data member at the end of the base
-# class extends the in-data region to offset 40, preventing derived
-# fields from landing in what used to be implicit padding. Gated on
-# TAGGED_SIZE_8_BYTES so pointer-compression builds (tagged_size=4)
-# keep their original layout.
-run_py_patch \
-  "js-atomics-synchronization.h: explicit trailing pad on base" \
-  "$V8_DIR/src/objects/js-atomics-synchronization.h" \
-  "// libv8: explicit trailing pad to defeat ABI tail-padding reuse" <<'PYEOF'
-import pathlib, sys
-p = pathlib.Path(sys.argv[1])
-src = p.read_text(encoding="utf-8")
-needle = ("  ExternalPointerMember<kWaiterQueueNodeTag> waiter_queue_head_;\n"
-          "  std::atomic<uint32_t> state_;\n")
-if needle not in src:
-    sys.exit("js-atomics-synchronization.h: field block not found")
-replacement = (
-    "  ExternalPointerMember<kWaiterQueueNodeTag> waiter_queue_head_;\n"
-    "  std::atomic<uint32_t> state_;\n"
-    "#if TAGGED_SIZE_8_BYTES\n"
-    "  // libv8: explicit trailing pad to defeat ABI tail-padding reuse\n"
-    "  // so JSAtomicsMutex::owner_thread_id_ /\n"
-    "  // JSAtomicsCondition::optional_padding_ land at Torque-computed\n"
-    "  // offset 40 instead of being absorbed at 36.\n"
-    "  uint32_t libv8_base_pad_;\n"
-    "#endif\n"
-)
-p.write_text(src.replace(needle, replacement, 1), encoding="utf-8")
-PYEOF
+# Revert: linux-x64 is the only required target and must stay green.
+# windows-x64 / linux-arm64 fall back to their pre-existing
+# JSAtomicsMutex offset failures, which are addressed by disabling the
+# Windows targets entirely and leaving linux-arm64 to be sorted out by
+# the gcc-14 toolchain upgrade + other patches (the assert may still
+# fire there; handle that as a separate, focused fix).
 
 # ----------------------------------------------------------------------------
 # Patch 4: [REVERTED — see note]
