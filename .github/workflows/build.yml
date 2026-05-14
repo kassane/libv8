@@ -72,17 +72,23 @@ jobs:
         env:
           RUNNERS: ${{ inputs.runners || 'all' }}
         run: |
-          # Windows targets disabled in the matrix: V8 14.9 has an MS ABI
-          # strict-pack / Torque-kSize mismatch in ExtendedMap that no
-          # portable C++ attribute can fix from outside the Torque tool.
-          # Tracked separately; re-enable individually once a Torque-side
-          # patch is ready.
+          # Windows targets re-enabled as optional. They currently hit a
+          # V8 14.9 internal layout mismatch (ExtendedMap kSize 73 vs C++
+          # sizeof 76 on MS ABI strict-pack inheritance) that the rest
+          # of the matrix isn't affected by. The vs_toolchain.py
+          # neutralisation from scripts/patch-v8.sh and the Windows SDK
+          # Debugging Tools install already handle the earlier blockers;
+          # what's left is a Torque-side fix or an explicit-padding
+          # patch on the V8 source. continue-on-error keeps these from
+          # blocking the required linux-x64 build.
           free='[
             {"target":"linux-x64","runner":"ubuntu-22.04","optional":false},
             {"target":"linux-arm64","runner":"ubuntu-22.04-arm","optional":true}
           ]'
           paid='[
-            {"target":"macos-arm64","runner":"macos-latest","optional":true}
+            {"target":"macos-arm64","runner":"macos-latest","optional":true},
+            {"target":"windows-x64","runner":"windows-latest","optional":true},
+            {"target":"windows-arm64","runner":"windows-11-arm","optional":true}
           ]'
           if [[ "$RUNNERS" == "free-only" ]]; then
             include=$(jq -c <<<"$free")

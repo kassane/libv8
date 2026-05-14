@@ -320,4 +320,279 @@ addition = (
 p.write_text(src.replace(anchor, addition, 1), encoding="utf-8")
 PYEOF
 
+# ----------------------------------------------------------------------------
+# Patch 9: src/objects/js-atomics-synchronization.h — MS-ABI explicit
+# padding for JSAtomicsMutex / JSAtomicsCondition.
+#
+# Symptom on windows-x64 (clang-cl, target=x64) and the win_clang_x64
+# host-tool stage of windows-arm64 builds:
+#
+#   static_assert(kOwnerThreadIdOffset == offsetof(JSAtomicsMutex,
+#                                                  owner_thread_id_))
+#   evaluates to '40 == 36'
+#   static_assert(kOptionalPaddingOffset == offsetof(JSAtomicsCondition,
+#                                                   optional_padding_))
+#   evaluates to '40 == 36'
+#
+# Torque emits kOwnerThreadIdOffset / kOptionalPaddingOffset as 40 on
+# MS ABI builds. C++ offsetof comes out 36 because the C++ Itanium-
+# style tail-padding reuse rule lets derived fields land in the base's
+# trailing 4 bytes of implicit padding (JSSynchronizationPrimitive's
+# data ends at 36, sizeof = 40).
+#
+# Fix (gated strictly on `_MSC_VER` so Itanium-ABI Linux/macOS are
+# untouched, where the upstream layout already matches Torque):
+#
+#   * Add an explicit `uint32_t libv8_base_pad_` to
+#     JSSynchronizationPrimitive — turns the implicit 4 bytes of tail
+#     padding into a real data member. Derived classes can no longer
+#     reuse it, so subclass fields now start at offset 40.
+#   * Add `uint32_t libv8_mutex_trail_pad_` after
+#     JSAtomicsMutex::owner_thread_id_ — keeps sizeof an even multiple
+#     of kTaggedSize (8). Without it, sizeof = 40+4 = 44 and mksnapshot
+#     fires `Check failed: IsAligned(size_in_bytes, kTaggedSize)`.
+#   * Same trail pad on JSAtomicsCondition after `optional_padding_`.
+run_py_patch \
+  "js-atomics-synchronization.h: MS ABI explicit padding" \
+  "$V8_DIR/src/objects/js-atomics-synchronization.h" \
+  "// libv8: MS ABI explicit padding (Patch 9)" <<'PYEOF'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+src = p.read_text(encoding="utf-8")
+
+edits = [
+    # JSSynchronizationPrimitive: explicit base pad.
+    (
+        "  ExternalPointerMember<kWaiterQueueNodeTag> waiter_queue_head_;\n"
+        "  std::atomic<uint32_t> state_;\n"
+        "} V8_OBJECT_END;",
+        "  ExternalPointerMember<kWaiterQueueNodeTag> waiter_queue_head_;\n"
+        "  std::atomic<uint32_t> state_;\n"
+        "#if TAGGED_SIZE_8_BYTES && defined(_MSC_VER)\n"
+        "  // libv8: MS ABI explicit padding (Patch 9) — defeats tail-\n"
+        "  // padding reuse so JSAtomicsMutex::owner_thread_id_ /\n"
+        "  // JSAtomicsCondition::optional_padding_ land at Torque-\n"
+        "  // emitted offset 40 instead of being absorbed at 36.\n"
+        "  uint32_t libv8_base_pad_;\n"
+        "#endif\n"
+        "} V8_OBJECT_END;",
+    ),
+    # JSAtomicsMutex: trailing pad to keep sizeof 8-aligned.
+    (
+        "  std::atomic<int32_t> owner_thread_id_;\n"
+        "\n"
+        "  // Defined out-of-line below the class so `offsetof` / `sizeof` on the\n"
+        "  // still-incomplete type can appear in an initializer.\n"
+        "  static const int kOwnerThreadIdOffset;\n"
+        "  static const int kHeaderSize;\n"
+        "} V8_OBJECT_END;",
+        "  std::atomic<int32_t> owner_thread_id_;\n"
+        "#if TAGGED_SIZE_8_BYTES && defined(_MSC_VER)\n"
+        "  // libv8: trailing pad to keep sizeof 8-aligned for mksnapshot's\n"
+        "  // IsAligned(size_in_bytes, kTaggedSize) runtime check.\n"
+        "  uint32_t libv8_mutex_trail_pad_;\n"
+        "#endif\n"
+        "\n"
+        "  // Defined out-of-line below the class so `offsetof` / `sizeof` on the\n"
+        "  // still-incomplete type can appear in an initializer.\n"
+        "  static const int kOwnerThreadIdOffset;\n"
+        "  static const int kHeaderSize;\n"
+        "} V8_OBJECT_END;",
+    ),
+    # JSAtomicsCondition: trailing pad inside the same TAGGED_SIZE_8_BYTES
+    # block. The upstream optional_padding_ exists for the same purpose
+    # on Itanium ABI; we additionally need a MS-ABI trailer.
+    (
+        "#if TAGGED_SIZE_8_BYTES\n"
+        "  uint32_t optional_padding_;\n"
+        "#endif  // TAGGED_SIZE_8_BYTES\n",
+        "#if TAGGED_SIZE_8_BYTES\n"
+        "  uint32_t optional_padding_;\n"
+        "#if defined(_MSC_VER)\n"
+        "  // libv8: MS ABI trailer to keep sizeof 8-aligned.\n"
+        "  uint32_t libv8_cond_trail_pad_;\n"
+        "#endif\n"
+        "#endif  // TAGGED_SIZE_8_BYTES\n",
+    ),
+]
+
+applied = 0
+for old, new in edits:
+    if old not in src:
+        sys.exit(f"js-atomics-synchronization.h: edit anchor not found: {old[:60]!r}")
+    src = src.replace(old, new, 1)
+    applied += 1
+if applied != 3:
+    sys.exit(f"js-atomics-synchronization.h: expected 3 edits, applied {applied}")
+p.write_text(src, encoding="utf-8")
+PYEOF
+
+# ----------------------------------------------------------------------------
+# Patch 10 (v3): src/base/functional/bind-internal.h — Base-class
+# fallback partial specializations for ExtractCallableRunTypeImpl,
+# gated on _MSC_VER. Fixes windows-x64 / windows-arm64 hard error on
+# `std::function<bool()>` reached through FunctionRef's default
+# `RunType = FunctorTraits<Functor>::RunType` template argument.
+#
+# Root cause (confirmed by reading the actual V8 14.9 source):
+#
+# V8 routes Functor → RunType through:
+#   FunctorTraits<F>                                    (line 134-135)
+#     → DecayedFunctorTraits<decay<F>>                  (line 138-139)
+#         → for callables w/ non-overloaded operator():
+#           uses ExtractCallableRunType<F>              (line 162)
+#             → ExtractCallableRunTypeImpl<F, decltype(&F::operator())>
+#                                                       (line 105-128)
+#
+# ExtractCallableRunTypeImpl has 4 partial specializations on
+# `Signature = R (Callable::*)(Args...) [const][noexcept]`. They all
+# bake Callable into the class part of the member-pointer.
+#
+# MS-STL implements `std::function<R(Args...)>` with `operator()`
+# inherited from a base class, so
+#   `decltype(&std::function<bool()>::operator())`
+# resolves to `bool (BASE::*)() const` where BASE != std::function.
+# None of the 4 specs match → primary stays undefined → any ::Type
+# access hard-errors with `implicit instantiation of undefined
+# template 'ExtractCallableRunTypeImpl<std::function<bool ()>>'`.
+#
+# libc++ / libstdc++ implement std::function::operator() as a direct
+# member, so Callable == Base, the const spec at line 117 matches,
+# and Linux/macOS work without patching.
+#
+# Two earlier attempts failed:
+#   v1 (15df34e revert): added a partial spec on the trait with one
+#     template arg. The primary has TWO template args (Callable,
+#     Signature with default); the one-arg partial interacted badly
+#     with the existing 4 specs and default-arg substitution — and
+#     regressed both linux-x64 and windows-arm64.
+#   v2 (22a33c8): added a high-level FunctorTraits<std::function<...>>
+#     spec, expecting partial-ordering to make it win over the
+#     existing IsComplete-constrained spec on line 240. But evaluating
+#     line 240's `requires IsComplete<DecayedFunctorTraits<...>>`
+#     triggers a hard error during sizeof(T) — before partial-
+#     ordering kicks in. So v2 ran but didn't take effect; CI run
+#     25852791414 produced the IDENTICAL backtrace (with line numbers
+#     shifted by +4 from the new #include, confirming the patch
+#     applied but didn't shield).
+#
+# v3 (this patch): fix the trait at the ROOT by handling the
+# `R (Base::*)(Args...) [quals]` shape where Base is a proper base
+# class of Callable — exactly the MS-STL std::function-via-
+# inheritance pattern. Constraint `derived_from<Callable, Base> &&
+# !same_as<Callable, Base>` keeps it inactive on Linux/macOS where
+# operator() is a direct member (Callable == Base, existing const
+# spec at line 117 wins unambiguously).
+#
+# Smoke-tested with g++ -std=c++20 -fsyntax-only against the actual
+# V8 14.9 file in three configurations:
+#   1) no _MSC_VER, libstdc++ std::function (direct op()):
+#      RunType = bool() via existing const spec.
+#   2) faked _MSC_VER + custom MyFn-via-base mimicking MS-STL:
+#      RunType = bool() via new Base-fallback spec.
+#   3) faked _MSC_VER + lambda (direct op()):
+#      RunType = bool(int) via existing const spec (new spec's
+#      !same_as constraint excludes it; no ambiguity).
+run_py_patch \
+  "bind-internal.h: Base-class fallback for ExtractCallableRunTypeImpl" \
+  "$V8_DIR/src/base/functional/bind-internal.h" \
+  "// libv8: MS-ABI fallback specs for ExtractCallableRunTypeImpl" <<'PYEOF'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+src = p.read_text(encoding="utf-8")
+
+# 1) Add `#include <concepts>` for std::derived_from / std::same_as.
+inc_anchor = "#include <utility>\n"
+if inc_anchor not in src:
+    sys.exit("bind-internal.h: '#include <utility>' anchor not found")
+src = src.replace(inc_anchor,
+    "#include <utility>\n"
+    "#include <concepts>  // libv8: derived_from/same_as for the\n"
+    "                     // Base-fallback specs below.\n",
+    1)
+
+# 2) After the existing 4-variant ExtractCallableRunTypeImpl block's
+# `#undef`, add a parallel 4-variant block whose partial specs match
+# `R (Base::*)(Args...) quals` where Base is a proper base of Callable.
+anchor = "#undef BIND_INTERNAL_EXTRACT_CALLABLE_RUN_TYPE_WITH_QUALS\n"
+if anchor not in src:
+    sys.exit("bind-internal.h: existing macro #undef anchor not found")
+addition = anchor + (
+    "\n"
+    "// libv8: MS-ABI fallback specs for ExtractCallableRunTypeImpl.\n"
+    "// When Callable inherits operator() from a base class (MS-STL\n"
+    "// std::function), `decltype(&Callable::operator())` resolves\n"
+    "// to `R (Base::*)(Args...) [quals]` with Base != Callable, so\n"
+    "// none of the 4 specs above match. These 4 fallback specs\n"
+    "// relax the class-part of the member-pointer to any Base type,\n"
+    "// gated on Callable strictly derived from Base. On libc++/\n"
+    "// libstdc++ operator() is a direct member, Callable == Base,\n"
+    "// the !same_as constraint excludes these — existing specs win.\n"
+    "#if defined(_MSC_VER)\n"
+    "#define BIND_INTERNAL_EXTRACT_CALLABLE_RUN_TYPE_FROM_BASE(quals)        \\\n"
+    "  template <typename Callable, typename Base, typename R,               \\\n"
+    "            typename... Args>                                           \\\n"
+    "    requires(std::derived_from<Callable, Base> &&                       \\\n"
+    "             !std::same_as<Callable, Base>)                             \\\n"
+    "  struct ExtractCallableRunTypeImpl<Callable,                           \\\n"
+    "                                    R (Base::*)(Args...) quals> {       \\\n"
+    "    using Type = R(Args...);                                            \\\n"
+    "  }\n"
+    "\n"
+    "BIND_INTERNAL_EXTRACT_CALLABLE_RUN_TYPE_FROM_BASE();\n"
+    "BIND_INTERNAL_EXTRACT_CALLABLE_RUN_TYPE_FROM_BASE(const);\n"
+    "BIND_INTERNAL_EXTRACT_CALLABLE_RUN_TYPE_FROM_BASE(noexcept);\n"
+    "BIND_INTERNAL_EXTRACT_CALLABLE_RUN_TYPE_FROM_BASE(const noexcept);\n"
+    "\n"
+    "#undef BIND_INTERNAL_EXTRACT_CALLABLE_RUN_TYPE_FROM_BASE\n"
+    "#endif  // _MSC_VER\n"
+)
+src = src.replace(anchor, addition, 1)
+p.write_text(src, encoding="utf-8")
+PYEOF
+
+# ----------------------------------------------------------------------------
+# Patch 11: src/runtime/runtime-test.cc — drop the `{false}` initializer
+# on `static std::atomic_flag printed_warning`.
+#
+# MS-STL's std::atomic_flag has only a default constructor and an
+# (implicit) copy constructor — no single-bool constructor. Brace-
+# initialization with `false` therefore fails on clang-cl/MS-STL:
+#   error: no matching constructor for initialization of
+#          'std::atomic_flag'
+#     static std::atomic_flag printed_warning{false};
+#
+# libc++ / libstdc++ accept the brace-init as an extension; MS-STL is
+# strictly standards-correct.
+#
+# Fix: drop the initializer. In C++20 `atomic_flag` has
+# `constexpr atomic_flag() noexcept = default;` and the default state
+# is REQUIRED to be clear (no longer unspecified as in C++17). V8 is
+# built with /std:c++20 on all targets, so `static std::atomic_flag
+# printed_warning;` is portable and semantically identical: the
+# subsequent `.test_and_set()` returns false on first call (was
+# clear, now set) and true thereafter — the exact behavior the
+# warn-once block relies on.
+#
+# Verified: g++ -std=c++20 confirms default-init test_and_set
+# semantics match the {false}-init version.
+run_py_patch \
+  "runtime-test.cc: drop {false} initializer on std::atomic_flag" \
+  "$V8_DIR/src/runtime/runtime-test.cc" \
+  "// libv8: drop std::atomic_flag {false} initializer" <<'PYEOF'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+src = p.read_text(encoding="utf-8")
+old = "  static std::atomic_flag printed_warning{false};\n"
+new = (
+    "  // libv8: drop std::atomic_flag {false} initializer (MS-STL has\n"
+    "  // no bool ctor; C++20 default-init guarantees clear state).\n"
+    "  static std::atomic_flag printed_warning;\n"
+)
+if old not in src:
+    sys.exit("runtime-test.cc: atomic_flag initializer anchor not found")
+src = src.replace(old, new, 1)
+p.write_text(src, encoding="utf-8")
+PYEOF
+
 log "patch-v8.sh: done"
