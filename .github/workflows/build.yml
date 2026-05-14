@@ -51,8 +51,19 @@ on:
         type: boolean
 
 concurrency:
-  group: build-${{ github.ref }}-${{ inputs.profile || 'default' }}-${{ inputs.runners || 'all' }}
-  cancel-in-progress: true
+  # Include `github.event_name` so push / pull_request / workflow_dispatch /
+  # workflow_call land in DIFFERENT groups even when they share a ref. The
+  # previous group key collapsed all events at `refs/heads/main` into one
+  # bucket, which caused a routine merge-to-main to evict an in-progress
+  # release.yml run (workflow_call from main, ref=refs/heads/main, same
+  # group) — see https://github.com/kassane/libv8/actions/runs/25883752405/
+  # job/76070203995 where the windows-arm64 build was killed 2h38m in.
+  group: build-${{ github.event_name }}-${{ github.ref }}-${{ inputs.profile || 'default' }}-${{ inputs.runners || 'all' }}
+  # Cancel-in-progress only for pull_request and direct push events, where
+  # newer commits supersede older. Leave workflow_dispatch / workflow_call /
+  # schedule un-cancelable so long-running release-flow builds (3–4 h on
+  # windows-arm64) aren't killed by an unrelated dispatch or call.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 permissions:
   contents: read
