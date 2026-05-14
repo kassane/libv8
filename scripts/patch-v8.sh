@@ -551,4 +551,48 @@ src = src.replace(anchor, addition, 1)
 p.write_text(src, encoding="utf-8")
 PYEOF
 
+# ----------------------------------------------------------------------------
+# Patch 11: src/runtime/runtime-test.cc — drop the `{false}` initializer
+# on `static std::atomic_flag printed_warning`.
+#
+# MS-STL's std::atomic_flag has only a default constructor and an
+# (implicit) copy constructor — no single-bool constructor. Brace-
+# initialization with `false` therefore fails on clang-cl/MS-STL:
+#   error: no matching constructor for initialization of
+#          'std::atomic_flag'
+#     static std::atomic_flag printed_warning{false};
+#
+# libc++ / libstdc++ accept the brace-init as an extension; MS-STL is
+# strictly standards-correct.
+#
+# Fix: drop the initializer. In C++20 `atomic_flag` has
+# `constexpr atomic_flag() noexcept = default;` and the default state
+# is REQUIRED to be clear (no longer unspecified as in C++17). V8 is
+# built with /std:c++20 on all targets, so `static std::atomic_flag
+# printed_warning;` is portable and semantically identical: the
+# subsequent `.test_and_set()` returns false on first call (was
+# clear, now set) and true thereafter — the exact behavior the
+# warn-once block relies on.
+#
+# Verified: g++ -std=c++20 confirms default-init test_and_set
+# semantics match the {false}-init version.
+run_py_patch \
+  "runtime-test.cc: drop {false} initializer on std::atomic_flag" \
+  "$V8_DIR/src/runtime/runtime-test.cc" \
+  "// libv8: drop std::atomic_flag {false} initializer" <<'PYEOF'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+src = p.read_text(encoding="utf-8")
+old = "  static std::atomic_flag printed_warning{false};\n"
+new = (
+    "  // libv8: drop std::atomic_flag {false} initializer (MS-STL has\n"
+    "  // no bool ctor; C++20 default-init guarantees clear state).\n"
+    "  static std::atomic_flag printed_warning;\n"
+)
+if old not in src:
+    sys.exit("runtime-test.cc: atomic_flag initializer anchor not found")
+src = src.replace(old, new, 1)
+p.write_text(src, encoding="utf-8")
+PYEOF
+
 log "patch-v8.sh: done"
