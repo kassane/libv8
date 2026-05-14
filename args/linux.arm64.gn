@@ -1,0 +1,16 @@
+target_os = "linux"
+target_cpu = "arm64"
+v8_target_cpu = "arm64"
+
+use_sysroot = false
+use_lld = false
+
+# Chromium does not publish a Linux_aarch64 prebuilt clang for V8 14.9's
+# pinned revision (llvmorg-23-init-…). apt.llvm.org's stable line tops
+# out at clang-21 which doesn't know the clang-22+ flags V8 emits, so we
+# fall back to system gcc/g++ here.
+#
+# V8 14.9 also uses the Clang-only __has_warning preprocessor extension
+# in src/base/macros.h unguarded — scripts/patch-v8.sh post-fetch wraps
+# those uses with defined(__clang__) so gcc can preprocess them.
+is_clang = false

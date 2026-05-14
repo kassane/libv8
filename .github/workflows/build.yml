@@ -54,6 +54,11 @@ concurrency:
   group: build-${{ github.ref }}-${{ inputs.profile || 'default' }}-${{ inputs.runners || 'all' }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  # Needed by the "Post failure log as PR comment" step on PR events.
+  pull-requests: write
+
 jobs:
   matrix:
     # GitHub Actions does not allow referencing matrix.* in job-level if:,
@@ -67,8 +72,14 @@ jobs:
         env:
           RUNNERS: ${{ inputs.runners || 'all' }}
         run: |
+          # Windows targets disabled in the matrix: V8 14.9 has an MS ABI
+          # strict-pack / Torque-kSize mismatch in ExtendedMap that no
+          # portable C++ attribute can fix from outside the Torque tool.
+          # Tracked separately; re-enable individually once a Torque-side
+          # patch is ready.
           free='[
-            {"target":"linux-x64","runner":"ubuntu-22.04","optional":false}
+            {"target":"linux-x64","runner":"ubuntu-22.04","optional":false},
+            {"target":"linux-arm64","runner":"ubuntu-22.04-arm","optional":true}
           ]'
           paid='[
             {"target":"macos-arm64","runner":"macos-latest","optional":true}
@@ -111,7 +122,41 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            ccache pkg-config xz-utils lsb-release sudo curl
+            ccache pkg-config xz-utils lsb-release sudo curl \
+            software-properties-common
+          # On linux-arm64 we build with system gcc (see args/linux.arm64.gn
+          # for why). gcc-12 from the ubuntu-22.04 base repos has incomplete
+          # C++20 conformance for the patterns V8 14.9 emits (ambiguous
+          # NewConsString partial-ordering, deleted-default-ctor from
+          # unions with constexpr-but-non-trivial members, etc). gcc-14
+          # resolves all of them; pull it from the toolchain-test PPA
+          # which carries arm64 builds. libstdc++-14-dev is the matching
+          # standard library (also brings the C++23 constexpr atomic
+          # improvements clang/libc++ already had).
+          #
+          # V8's build invokes the compiler as `aarch64-linux-gnu-g++`
+          # (the cross-compile-prefixed alias) even on native arm64,
+          # so update-alternatives has to redirect THAT name — not just
+          # `gcc`/`g++` — otherwise the build silently falls back to the
+          # base image's gcc-11 and we see "unrecognized command-line
+          # option -Wno-dangling-pointer" (a flag gcc-12+ introduced).
+          if [[ "$(uname -m)" == "aarch64" ]]; then
+            sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends \
+              gcc-14 g++-14 libstdc++-14-dev binutils
+            sudo update-alternatives \
+              --install /usr/bin/gcc gcc /usr/bin/gcc-14 60 \
+              --slave   /usr/bin/g++ g++ /usr/bin/g++-14
+            sudo update-alternatives \
+              --install /usr/bin/aarch64-linux-gnu-gcc aarch64-linux-gnu-gcc \
+                /usr/bin/gcc-14 60 \
+              --slave   /usr/bin/aarch64-linux-gnu-g++ aarch64-linux-gnu-g++ \
+                /usr/bin/g++-14
+            # Verify the cross-prefix binary really resolves to gcc-14
+            # (catches PPA install failures + missing alternatives).
+            aarch64-linux-gnu-g++ --version
+          fi
           # Make ccache the transparent default for any tool invocation,
           # the way kuoruan/libv8's Linux composite action does it.
           sudo update-ccache-symlinks
@@ -124,6 +169,33 @@ jobs:
         run: |
           brew install ccache xz
           echo "CC_WRAPPER=ccache" >> "$GITHUB_ENV"
+
+      - name: Install Windows build deps
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Both just-js/v8 and kuoruan/libv8 build Windows without
+          # ilammy/msvc-dev-cmd@v1 in the compile path; they rely on the
+          # runner's default MSVC env. Match that.
+          # depot_tools needs this on Windows to read the global gitconfig.
+          git config --global depot-tools.allowGlobalGitConfig true
+          "DEPOT_TOOLS_WIN_TOOLCHAIN=0" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+          # V8 14.9's build/vs_toolchain.py requires the "Debugging Tools for
+          # Windows" SDK feature (run #22 PR comment: dbghelp.dll missing at
+          # Windows Kits\10\Debuggers\x64\). windows-latest and
+          # windows-11-arm both ship the SDK without that component.
+          # Install via the official Windows 11 SDK 26100 setup with
+          # /features OptionId.WindowsDesktopDebuggers.
+          $ProgressPreference = 'SilentlyContinue'
+          $sdk = "$env:RUNNER_TEMP\winsdksetup.exe"
+          Invoke-WebRequest `
+            -Uri 'https://go.microsoft.com/fwlink/?linkid=2286561' `
+            -OutFile $sdk
+          Start-Process -Wait -FilePath $sdk -ArgumentList @(
+            '/features', 'OptionId.WindowsDesktopDebuggers',
+            '/quiet', '/norestart'
+          )
 
       - name: Cache compiler outputs
         uses: actions/cache@v5
@@ -150,10 +222,13 @@ jobs:
           # V8 ships a canonical apt installer at build/install-build-deps.sh
           # that pulls in libstdc++, glib, font/X11 stubs, etc. Without it
           # the default ubuntu-22.04 image is missing several headers GN/
-          # ninja need (matches just-js/v8's CI).
+          # ninja need. Pass --arm on aarch64 hosts so it skips i386 cross-
+          # compile packages that don't exist on arm64.
           if [[ -x v8/build/install-build-deps.sh ]]; then
+            EXTRA=""
+            [[ "$(uname -m)" == "aarch64" ]] && EXTRA="--arm"
             sudo v8/build/install-build-deps.sh \
-              --no-prompt --no-chromeos-fonts --no-nacl || true
+              --no-prompt --no-chromeos-fonts --no-nacl $EXTRA || true
           fi
 
       - name: Toolchain versions
@@ -165,6 +240,7 @@ jobs:
           (cd v8 && gn --version) || true
           (cd v8 && ninja --version) || true
           clang --version || true
+          gcc --version || true
           cc --version || true
           uname -a
           echo "::endgroup::"
@@ -176,6 +252,20 @@ jobs:
           mkdir -p logs
           ./scripts/build.sh ${{ matrix.target }} ${{ env.PROFILE }} \
             2>&1 | tee logs/build-${{ matrix.target }}-${{ env.PROFILE }}.log
+
+      - name: Dump build log inline on failure
+        if: failure()
+        shell: bash
+        run: |
+          LOG="logs/build-${{ matrix.target }}-${{ env.PROFILE }}.log"
+          echo "::group::Last 200 lines of $LOG"
+          [[ -f "$LOG" ]] && tail -n 200 "$LOG" \
+            || echo "(no log file — failure was before Build step)"
+          echo "::endgroup::"
+          echo "::group::Effective args.gn"
+          F="v8/out/${{ matrix.target }}.${{ env.PROFILE }}/args.gn"
+          [[ -f "$F" ]] && cat "$F" || echo "(no args.gn)"
+          echo "::endgroup::"
 
       - name: Upload build log on failure
         if: failure()
@@ -213,6 +303,37 @@ jobs:
               echo '```'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post failure log as PR comment
+        if: failure() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET: ${{ matrix.target }}
+          PROFILE: ${{ env.PROFILE }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        shell: bash
+        # Posts the build-log tail as a PR comment so it's readable from
+        # the GitHub API without auth-gated artifact downloads. Best-effort
+        # — never fail the job because the comment could not be posted.
+        continue-on-error: true
+        run: |
+          LOG="logs/build-${TARGET}-${PROFILE}.log"
+          [[ -f "$LOG" ]] || { echo "no log file"; exit 0; }
+          BODY="$(mktemp)"
+          {
+            echo "### \`${TARGET}\` (${PROFILE}) failed — [run](${RUN_URL})"
+            echo ""
+            echo '<details><summary>Last 80 lines of build log</summary>'
+            echo ""
+            echo '```'
+            tail -n 80 "$LOG"
+            echo '```'
+            echo '</details>'
+          } > "$BODY"
+          # gh ships preinstalled on every github-hosted runner.
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file "$BODY" || true
 
       - name: Package
         shell: bash

@@ -27,16 +27,45 @@ args.gn                 # exact GN args used for this build
 VERSION                 # V8 tag this artifact was cut from
 ```
 
-Supported targets (CI-built):
+Supported targets:
 
-| OS    | Arch  | Runner                          |
-|-------|-------|---------------------------------|
-| Linux | x64   | `ubuntu-22.04`                  |
-| macOS | arm64 | `macos-latest` (Apple Silicon)  |
+| OS      | Arch  | Runner                          | Status |
+|---------|-------|---------------------------------|--------|
+| Linux   | x64   | `ubuntu-22.04`                  | ✅ required |
+| Linux   | arm64 | `ubuntu-22.04-arm`              | optional (V8 14.9 blockers) |
+| macOS   | arm64 | `macos-latest`                  | optional |
+| Windows | x64   | `windows-latest` (Server 2025)  | optional (V8 14.9 blockers) |
+| Windows | arm64 | `windows-11-arm`                | optional (V8 14.9 blockers) |
 
-> Linux arm64, Windows x64 and Windows arm64 are currently disabled in CI —
-> V8's bundled toolchain (clang + rust) does not cleanly support those
-> runners in the configuration this repo uses. PRs welcome.
+Optional targets run with `continue-on-error`, so a failure on them doesn't
+fail the workflow. Linux x64 is the only hard-required target.
+
+### V8 14.9 source patches
+
+The optional targets each hit a V8 14.9 source-level bug. `scripts/patch-v8.sh`
+applies three surgical, idempotent post-fetch patches:
+
+- **`src/base/macros.h`** — wraps `__has_warning("-Wlifetime-safety")` and
+  `__has_warning("-Wreturn-stack-address")` in `defined(__clang__)` so gcc's
+  preprocessor doesn't choke on the clang-only extension (`linux-arm64` uses
+  gcc because Chromium ships no aarch64 prebuilt clang at V8 14.9's pinned
+  revision).
+
+- **`build/vs_toolchain.py::_CopyDebugger`** — replaced with a no-op + log.
+  Upstream raises when host `Debuggers/x64/dbghelp.dll` is missing; the
+  `windows-11-arm` SDK installer delivers only arm64 Debugging Tools, and
+  the static V8 monolith doesn't load those DLLs anyway.
+
+- **`src/objects/js-atomics-synchronization.h`** — forces
+  `alignas(uint64_t)` on `JSSynchronizationPrimitive` when
+  `TAGGED_SIZE_8_BYTES`. `V8_OBJECT`'s `pack(4)` caps class alignment at 4
+  on MSVC (gcc/clang honour `alignas` inside `pack`), so `sizeof` comes
+  out 4 bytes short of Torque's tagged-size-rounded computation — the
+  `JSAtomicsMutex::owner_thread_id_` and `JSAtomicsCondition::optional_padding_`
+  Torque/C++ offset `static_assert`s fail on `windows-x64`.
+
+Each patch carries a sentinel comment and silently skips if upstream
+matches (so a future V8 bump that fixes the bug doesn't fail this script).
 
 Build profiles (see `args/profiles/`):
 

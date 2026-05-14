@@ -23,4 +23,9 @@ log "gclient sync to V8 $V8_VERSION (this will take a while on first run)"
 gclient sync --no-history --reset -r "$V8_VERSION" \
   --jobs="$(nproc_portable)"
 
+# Apply surgical V8 14.9 patches (see scripts/patch-v8.sh). gclient sync
+# --reset wipes any uncommitted edits, so we always re-apply post-sync.
+# Each patch is idempotent.
+"$(dirname "$0")/patch-v8.sh"
+
 log "V8 $(git -C "$V8_DIR" describe --tags --always) ready in $V8_DIR"
