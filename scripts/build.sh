@@ -99,7 +99,11 @@ if [[ $RC -ne 0 ]]; then
   echo "================================================================"
   echo "ninja failed (rc=$RC); first FAILED block follows (max 80 lines):"
   echo "================================================================"
-  awk '/^FAILED:/{found=1} found' "$NINJA_LOG" | head -80
+  # Use awk's own line-limit instead of piping to `head -80`. The pipe
+  # version closes `head` after 80 lines, awk gets SIGPIPE (exit 141),
+  # `set -o pipefail` propagates 141, and `set -e` aborts before the
+  # `exit "$RC"` below — masking the real ninja rc with SIGPIPE.
+  awk '/^FAILED:/{found=1} found {print; if (++n >= 80) exit}' "$NINJA_LOG"
   exit "$RC"
 fi
 
