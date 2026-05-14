@@ -10,4 +10,17 @@ v8_enable_sandbox = false
 # match previous declaration" against system libc++. Linking V8's own
 # bundled libc++ here keeps the declarations consistent across all
 # translation units.
-use_custom_libcxx = true
+#
+# linux-arm64 is the exception: it builds with system gcc-14 + libstdc++
+# (V8 14.9's bundled clang prebuilt has no Linux_aarch64 build, see
+# args/linux.arm64.gn). The macOS visibility conflict doesn't apply
+# (libstdc++, not libc++), and V8's bundled libc++ headers require
+# GCC 15+ (they use __is_unbounded_array / __is_pointer / __decay /
+# __add_*_reference intrinsics gcc-14 doesn't support), so flipping
+# use_custom_libcxx=true there breaks the build at
+# libc++abi/cxa_aux_runtime. Keep system libstdc++ on that one target.
+if (target_os == "linux" && target_cpu == "arm64") {
+  use_custom_libcxx = false
+} else {
+  use_custom_libcxx = true
+}
