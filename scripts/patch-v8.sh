@@ -377,13 +377,13 @@ edits = [
         "#endif\n"
         "} V8_OBJECT_END;",
     ),
-    # JSAtomicsMutex: trailing pad to keep sizeof 8-aligned.
+    # JSAtomicsMutex: trailing pad to keep sizeof 8-aligned. V8 15.0
+    # dropped the in-class `kOwnerThreadIdOffset` declaration (and the
+    # accompanying comment block) that V8 14.9 had — anchor was updated
+    # accordingly.
     (
         "  std::atomic<int32_t> owner_thread_id_;\n"
         "\n"
-        "  // Defined out-of-line below the class so `offsetof` / `sizeof` on the\n"
-        "  // still-incomplete type can appear in an initializer.\n"
-        "  static const int kOwnerThreadIdOffset;\n"
         "  static const int kHeaderSize;\n"
         "} V8_OBJECT_END;",
         "  std::atomic<int32_t> owner_thread_id_;\n"
@@ -393,9 +393,6 @@ edits = [
         "  uint32_t libv8_mutex_trail_pad_;\n"
         "#endif\n"
         "\n"
-        "  // Defined out-of-line below the class so `offsetof` / `sizeof` on the\n"
-        "  // still-incomplete type can appear in an initializer.\n"
-        "  static const int kOwnerThreadIdOffset;\n"
         "  static const int kHeaderSize;\n"
         "} V8_OBJECT_END;",
     ),
