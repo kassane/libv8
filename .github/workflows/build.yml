@@ -71,6 +71,8 @@ jobs:
         shell: bash
         env:
           RUNNERS: ${{ inputs.runners || 'all' }}
+          INPUT_PROFILE: ${{ inputs.profile }}
+          EVENT: ${{ github.event_name }}
         run: |
           # Windows targets re-enabled as optional. They currently hit a
           # V8 14.9 internal layout mismatch (ExtendedMap kSize 73 vs C++
@@ -91,15 +93,33 @@ jobs:
             {"target":"windows-arm64","runner":"windows-11-arm","optional":true}
           ]'
           if [[ "$RUNNERS" == "free-only" ]]; then
-            include=$(jq -c <<<"$free")
+            targets=$(jq -c <<<"$free")
           else
-            include=$(jq -c --argjson a "$free" --argjson b "$paid" -n '$a + $b')
+            targets=$(jq -c --argjson a "$free" --argjson b "$paid" -n '$a + $b')
           fi
+          # Profile axis:
+          #  - workflow_call (release.yml's per-profile invocation) or
+          #    workflow_dispatch: respect the single profile the caller
+          #    specified.
+          #  - pull_request / push to main: fan out across the two
+          #    ABI-affecting profiles (default + pointer-compression) so
+          #    profile-specific regressions get caught at PR time rather
+          #    than at release time (which is where pointer-compression
+          #    issues first surfaced previously).
+          if [[ -n "${INPUT_PROFILE:-}" ]]; then
+            profiles="[\"$INPUT_PROFILE\"]"
+          elif [[ "$EVENT" == "pull_request" || "$EVENT" == "push" ]]; then
+            profiles='["default","pointer-compression"]'
+          else
+            profiles='["default"]'
+          fi
+          include=$(jq -c -n --argjson t "$targets" --argjson p "$profiles" \
+            '[ $p[] as $pf | $t[] | . + {profile: $pf} ]')
           echo "include=$include" >> "$GITHUB_OUTPUT"
 
   build:
     needs: matrix
-    name: ${{ matrix.target }} (${{ inputs.profile || 'default' }})
+    name: ${{ matrix.target }} (${{ matrix.profile }})
     runs-on: ${{ matrix.runner }}
     # macOS/Windows runners are billed; the matrix job marks them optional
     # so that a billing block or paid-runner outage does NOT fail the whole
@@ -110,7 +130,7 @@ jobs:
       matrix:
         include: ${{ fromJson(needs.matrix.outputs.include) }}
     env:
-      PROFILE: ${{ inputs.profile || 'default' }}
+      PROFILE: ${{ matrix.profile }}
     steps:
       - uses: actions/checkout@v6
 
