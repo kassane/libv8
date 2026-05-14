@@ -320,4 +320,111 @@ addition = (
 p.write_text(src.replace(anchor, addition, 1), encoding="utf-8")
 PYEOF
 
+# ----------------------------------------------------------------------------
+# Patch 9: src/objects/js-atomics-synchronization.h — MS-ABI explicit
+# padding for JSAtomicsMutex / JSAtomicsCondition.
+#
+# Symptom on windows-x64 (clang-cl, target=x64) and the win_clang_x64
+# host-tool stage of windows-arm64 builds:
+#
+#   static_assert(kOwnerThreadIdOffset == offsetof(JSAtomicsMutex,
+#                                                  owner_thread_id_))
+#   evaluates to '40 == 36'
+#   static_assert(kOptionalPaddingOffset == offsetof(JSAtomicsCondition,
+#                                                   optional_padding_))
+#   evaluates to '40 == 36'
+#
+# Torque emits kOwnerThreadIdOffset / kOptionalPaddingOffset as 40 on
+# MS ABI builds. C++ offsetof comes out 36 because the C++ Itanium-
+# style tail-padding reuse rule lets derived fields land in the base's
+# trailing 4 bytes of implicit padding (JSSynchronizationPrimitive's
+# data ends at 36, sizeof = 40).
+#
+# Fix (gated strictly on `_MSC_VER` so Itanium-ABI Linux/macOS are
+# untouched, where the upstream layout already matches Torque):
+#
+#   * Add an explicit `uint32_t libv8_base_pad_` to
+#     JSSynchronizationPrimitive — turns the implicit 4 bytes of tail
+#     padding into a real data member. Derived classes can no longer
+#     reuse it, so subclass fields now start at offset 40.
+#   * Add `uint32_t libv8_mutex_trail_pad_` after
+#     JSAtomicsMutex::owner_thread_id_ — keeps sizeof an even multiple
+#     of kTaggedSize (8). Without it, sizeof = 40+4 = 44 and mksnapshot
+#     fires `Check failed: IsAligned(size_in_bytes, kTaggedSize)`.
+#   * Same trail pad on JSAtomicsCondition after `optional_padding_`.
+run_py_patch \
+  "js-atomics-synchronization.h: MS ABI explicit padding" \
+  "$V8_DIR/src/objects/js-atomics-synchronization.h" \
+  "// libv8: MS ABI explicit padding (Patch 9)" <<'PYEOF'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+src = p.read_text(encoding="utf-8")
+
+edits = [
+    # JSSynchronizationPrimitive: explicit base pad.
+    (
+        "  ExternalPointerMember<kWaiterQueueNodeTag> waiter_queue_head_;\n"
+        "  std::atomic<uint32_t> state_;\n"
+        "} V8_OBJECT_END;",
+        "  ExternalPointerMember<kWaiterQueueNodeTag> waiter_queue_head_;\n"
+        "  std::atomic<uint32_t> state_;\n"
+        "#if TAGGED_SIZE_8_BYTES && defined(_MSC_VER)\n"
+        "  // libv8: MS ABI explicit padding (Patch 9) — defeats tail-\n"
+        "  // padding reuse so JSAtomicsMutex::owner_thread_id_ /\n"
+        "  // JSAtomicsCondition::optional_padding_ land at Torque-\n"
+        "  // emitted offset 40 instead of being absorbed at 36.\n"
+        "  uint32_t libv8_base_pad_;\n"
+        "#endif\n"
+        "} V8_OBJECT_END;",
+    ),
+    # JSAtomicsMutex: trailing pad to keep sizeof 8-aligned.
+    (
+        "  std::atomic<int32_t> owner_thread_id_;\n"
+        "\n"
+        "  // Defined out-of-line below the class so `offsetof` / `sizeof` on the\n"
+        "  // still-incomplete type can appear in an initializer.\n"
+        "  static const int kOwnerThreadIdOffset;\n"
+        "  static const int kHeaderSize;\n"
+        "} V8_OBJECT_END;",
+        "  std::atomic<int32_t> owner_thread_id_;\n"
+        "#if TAGGED_SIZE_8_BYTES && defined(_MSC_VER)\n"
+        "  // libv8: trailing pad to keep sizeof 8-aligned for mksnapshot's\n"
+        "  // IsAligned(size_in_bytes, kTaggedSize) runtime check.\n"
+        "  uint32_t libv8_mutex_trail_pad_;\n"
+        "#endif\n"
+        "\n"
+        "  // Defined out-of-line below the class so `offsetof` / `sizeof` on the\n"
+        "  // still-incomplete type can appear in an initializer.\n"
+        "  static const int kOwnerThreadIdOffset;\n"
+        "  static const int kHeaderSize;\n"
+        "} V8_OBJECT_END;",
+    ),
+    # JSAtomicsCondition: trailing pad inside the same TAGGED_SIZE_8_BYTES
+    # block. The upstream optional_padding_ exists for the same purpose
+    # on Itanium ABI; we additionally need a MS-ABI trailer.
+    (
+        "#if TAGGED_SIZE_8_BYTES\n"
+        "  uint32_t optional_padding_;\n"
+        "#endif  // TAGGED_SIZE_8_BYTES\n",
+        "#if TAGGED_SIZE_8_BYTES\n"
+        "  uint32_t optional_padding_;\n"
+        "#if defined(_MSC_VER)\n"
+        "  // libv8: MS ABI trailer to keep sizeof 8-aligned.\n"
+        "  uint32_t libv8_cond_trail_pad_;\n"
+        "#endif\n"
+        "#endif  // TAGGED_SIZE_8_BYTES\n",
+    ),
+]
+
+applied = 0
+for old, new in edits:
+    if old not in src:
+        sys.exit(f"js-atomics-synchronization.h: edit anchor not found: {old[:60]!r}")
+    src = src.replace(old, new, 1)
+    applied += 1
+if applied != 3:
+    sys.exit(f"js-atomics-synchronization.h: expected 3 edits, applied {applied}")
+p.write_text(src, encoding="utf-8")
+PYEOF
+
 log "patch-v8.sh: done"
