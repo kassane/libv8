@@ -33,6 +33,22 @@ sed 's/^/    /' "$ARGS_FILE" >&2
 log "gn gen $OUT_DIR"
 ( cd "$V8_DIR" && gn gen "out/$OUT_NAME" )
 
+# V8 15.0+ emits ninja rules that list `aarch64-linux-gnu-{ar,ld,nm,…}`
+# as a *relative-path file dependency* of archive/link targets, not as
+# a PATH-resolved command. So even with binutils-aarch64-linux-gnu
+# installed, ninja errors:
+#   ninja: error: 'aarch64-linux-gnu-ar', needed by 'obj/libv8_libbase.a',
+#                 missing and no known rule to make it
+# because ninja stats the file relative to its cwd (the build out dir).
+# Symlink each /usr/bin/aarch64-linux-gnu-* into the build out dir so
+# ninja's relative stat() resolves to the real binary. linux-arm64 only;
+# other targets either don't use this prefix or don't run on aarch64.
+if [[ "$TARGET" == "linux-arm64" ]]; then
+  for tool in /usr/bin/aarch64-linux-gnu-*; do
+    [[ -e "$tool" ]] && ln -sf "$tool" "$OUT_DIR/$(basename "$tool")"
+  done
+fi
+
 NINJA_JOBS="${NINJA_JOBS:-$(nproc_portable)}"
 
 # Windows-only mitigation for the V8 14.9 ExtendedMap layout mismatch.
