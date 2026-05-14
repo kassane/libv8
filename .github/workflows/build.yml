@@ -169,8 +169,18 @@ jobs:
           if [[ "$(uname -m)" == "aarch64" ]]; then
             sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
             sudo apt-get update
+            # binutils-aarch64-linux-gnu provides the cross-prefixed
+            # /usr/bin/aarch64-linux-gnu-{ar,as,ld,nm,objcopy,ranlib,strip}.
+            # V8 15.0+ invokes the archiver as `aarch64-linux-gnu-ar`
+            # (matching the cross-prefixed compiler convention V8 14.9
+            # already used for g++) even on native aarch64 hosts, so the
+            # plain `binutils` package's unprefixed /usr/bin/ar is not
+            # enough — ninja errors with:
+            #   ninja: error: 'aarch64-linux-gnu-ar', needed by
+            #     'obj/libv8_libbase.a', missing and no known rule to make it
             sudo apt-get install -y --no-install-recommends \
-              gcc-14 g++-14 libstdc++-14-dev binutils
+              gcc-14 g++-14 libstdc++-14-dev binutils \
+              binutils-aarch64-linux-gnu
             sudo update-alternatives \
               --install /usr/bin/gcc gcc /usr/bin/gcc-14 60 \
               --slave   /usr/bin/g++ g++ /usr/bin/g++-14
@@ -179,9 +189,11 @@ jobs:
                 /usr/bin/gcc-14 60 \
               --slave   /usr/bin/aarch64-linux-gnu-g++ aarch64-linux-gnu-g++ \
                 /usr/bin/g++-14
-            # Verify the cross-prefix binary really resolves to gcc-14
-            # (catches PPA install failures + missing alternatives).
+            # Verify the cross-prefix compiler + archiver really resolve
+            # (catches PPA install failures + missing alternatives + the
+            # binutils-aarch64-linux-gnu package not being installed).
             aarch64-linux-gnu-g++ --version
+            aarch64-linux-gnu-ar --version | head -n1
           fi
           # Make ccache the transparent default for any tool invocation,
           # the way kuoruan/libv8's Linux composite action does it.
