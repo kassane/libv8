@@ -427,4 +427,88 @@ if applied != 3:
 p.write_text(src, encoding="utf-8")
 PYEOF
 
+# ----------------------------------------------------------------------------
+# Patch 10: src/base/functional/bind-internal.h — add the missing
+# ExtractCallableRunTypeImpl specialization for std::function<R(Args...)>.
+#
+# V8 14.9 declares
+#   template <typename Functor> struct ExtractCallableRunTypeImpl;
+# and specializes it for free-function types, function pointers, and
+# member-function pointers — but not for std::function. On Windows,
+# something in src/wasm/stacks.h (transitively included from
+# src/objects/contexts.h) instantiates FunctionRef<bool()> with a
+# Functor that decays to std::function<bool()>. FunctionRef's class
+# template has a default template argument
+#   typename RunType = internal::FunctorTraits<Functor>::RunType
+# which is eagerly evaluated *before* the `requires kCompatibleFunctor`
+# clause filters incompatible functors out — so the substitution
+# triggers ExtractCallableRunTypeImpl<std::function<bool()>>, which is
+# undefined, and hard-errors out of any SFINAE friendliness:
+#
+#   error: implicit instantiation of undefined template
+#          'v8::base::internal::ExtractCallableRunTypeImpl<std::function<bool ()>>'
+#
+# Linux/macOS don't hit this — most likely because libstdc++/libc++'s
+# std::function decays through a different conversion that doesn't reach
+# this template instantiation, while MS-STL takes the offending path.
+#
+# Fix: add the missing specialization. Purely additive — adding a new
+# specialization to a forward-declared primary template never conflicts
+# with existing code, and matches Chromium's own base/bind_internal.h
+# pattern for the same trait.
+run_py_patch \
+  "bind-internal.h: ExtractCallableRunTypeImpl<std::function<...>>" \
+  "$V8_DIR/src/base/functional/bind-internal.h" \
+  "// libv8: ExtractCallableRunTypeImpl<std::function<...>>" <<'PYEOF'
+import pathlib, re, sys
+p = pathlib.Path(sys.argv[1])
+src = p.read_text(encoding="utf-8")
+
+# Anchor before the `using ExtractCallableRunType = ...` alias so our
+# specialization is visible at the point where the alias is consumed.
+m = re.search(
+    r"(template\s*<\s*typename\s+Functor\s*>\s*\n"
+    r"using\s+ExtractCallableRunType\s*=)",
+    src,
+)
+if not m:
+    sys.exit("bind-internal.h: ExtractCallableRunType alias anchor not found")
+
+# Make sure <functional> is available. V8 14.9's bind-internal.h does
+# include it transitively in practice, but guard anyway: add an include
+# right after the file's last existing #include if std::function isn't
+# already mentioned in the include block.
+if "<functional>" not in src:
+    inc_block = list(re.finditer(r"^#include[^\n]*\n", src, flags=re.MULTILINE))
+    if inc_block:
+        last = inc_block[-1]
+        src = (src[:last.end()]
+               + "// libv8: <functional> needed for std::function specialization\n"
+               + "#include <functional>\n"
+               + src[last.end():])
+        # Refresh anchor match since indices shifted.
+        m = re.search(
+            r"(template\s*<\s*typename\s+Functor\s*>\s*\n"
+            r"using\s+ExtractCallableRunType\s*=)",
+            src,
+        )
+
+insertion = (
+    "// libv8: ExtractCallableRunTypeImpl<std::function<...>> — V8 14.9\n"
+    "// only specializes the trait for free-function pointers and member-\n"
+    "// function pointers, so std::function<R(Args...)> hard-errors when\n"
+    "// reached via FunctionRef's eagerly-computed default template arg\n"
+    "// RunType = FunctorTraits<F>::RunType. Adding this specialization\n"
+    "// makes the trait well-formed for std::function targets. MS-STL\n"
+    "// reaches this path; libstdc++ / libc++ do not — but the fix is\n"
+    "// purely additive and safe on every platform.\n"
+    "template <typename R, typename... Args>\n"
+    "struct ExtractCallableRunTypeImpl<std::function<R(Args...)>> {\n"
+    "  using Type = R(Args...);\n"
+    "};\n\n"
+)
+src = src[:m.start()] + insertion + src[m.start():]
+p.write_text(src, encoding="utf-8")
+PYEOF
+
 log "patch-v8.sh: done"
