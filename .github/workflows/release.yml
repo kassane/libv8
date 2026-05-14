@@ -13,6 +13,15 @@ on:
 
 permissions:
   contents: write
+  # Reusable build.yml declares `pull-requests: write` (for its
+  # PR-comment-on-failure step). GitHub clamps a callee's permissions
+  # to whatever the caller grants, so without this line release.yml's
+  # `uses: ./.github/workflows/build.yml` is rejected at startup:
+  #   "requesting 'pull-requests: write', but is only allowed
+  #    'pull-requests: none'."
+  # The PR-comment step inside build.yml is a no-op on tag events; the
+  # grant just lets the reusable workflow start.
+  pull-requests: write
 
 jobs:
   build-default:
