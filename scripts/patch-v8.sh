@@ -292,4 +292,32 @@ if old not in src:
 p.write_text(src.replace(old, new, 1), encoding="utf-8")
 PYEOF
 
+# ----------------------------------------------------------------------------
+# Patch 8: src/wasm/constant-expression-interface.cc — include managed-inl.h.
+#
+# `Managed<T>::From(Isolate*, size_t, std::shared_ptr<T>, AllocationType)`
+# is defined inline in `src/objects/managed-inl.h`. This .cc file calls
+# it for `Managed<FutexManagedObjectWaitList>` in WaitqueueNew but only
+# includes `managed.h` (the non-inl forward declaration). Clang's link-
+# time inlining hides the issue on linux-x64 / macos-arm64; gcc on
+# linux-arm64 emits an unresolved external symbol at mksnapshot link
+# time. Adding the -inl.h include surfaces the template body.
+run_py_patch \
+  "constant-expression-interface.cc: include managed-inl.h" \
+  "$V8_DIR/src/wasm/constant-expression-interface.cc" \
+  "// libv8: include managed-inl.h for Managed<T>::From" <<'PYEOF'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+src = p.read_text(encoding="utf-8")
+anchor = '#include "src/wasm/constant-expression-interface.h"\n'
+if anchor not in src:
+    sys.exit("constant-expression-interface.cc: anchor include not found")
+addition = (
+    anchor
+    + '// libv8: include managed-inl.h for Managed<T>::From template body\n'
+    + '#include "src/objects/managed-inl.h"\n'
+)
+p.write_text(src.replace(anchor, addition, 1), encoding="utf-8")
+PYEOF
+
 log "patch-v8.sh: done"
