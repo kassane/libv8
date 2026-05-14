@@ -428,13 +428,15 @@ p.write_text(src, encoding="utf-8")
 PYEOF
 
 # ----------------------------------------------------------------------------
-# Patch 10 (v2): src/base/functional/bind-internal.h — explicit
-# FunctorTraits<std::function<R(Args...)>, BoundArgs...> specialization
-# under _MSC_VER, to bypass the trait chain that breaks on MS-STL.
+# Patch 10 (v3): src/base/functional/bind-internal.h — Base-class
+# fallback partial specializations for ExtractCallableRunTypeImpl,
+# gated on _MSC_VER. Fixes windows-x64 / windows-arm64 hard error on
+# `std::function<bool()>` reached through FunctionRef's default
+# `RunType = FunctorTraits<Functor>::RunType` template argument.
 #
-# Background — what fails on Windows MSVC and why:
+# Root cause (confirmed by reading the actual V8 14.9 source):
 #
-# V8 14.9 routes Functor → RunType through:
+# V8 routes Functor → RunType through:
 #   FunctorTraits<F>                                    (line 134-135)
 #     → DecayedFunctorTraits<decay<F>>                  (line 138-139)
 #         → for callables w/ non-overloaded operator():
@@ -444,101 +446,108 @@ PYEOF
 #
 # ExtractCallableRunTypeImpl has 4 partial specializations on
 # `Signature = R (Callable::*)(Args...) [const][noexcept]`. They all
-# require the member-pointer's class to equal Callable EXACTLY.
+# bake Callable into the class part of the member-pointer.
 #
-# MS-STL implements std::function<R(Args...)> with operator()
-# inherited from a base class. So
-#   decltype(&std::function<bool()>::operator())
+# MS-STL implements `std::function<R(Args...)>` with `operator()`
+# inherited from a base class, so
+#   `decltype(&std::function<bool()>::operator())`
 # resolves to `bool (BASE::*)() const` where BASE != std::function.
 # None of the 4 specs match → primary stays undefined → any ::Type
-# access fires:
-#   error: implicit instantiation of undefined template
-#          'v8::base::internal::ExtractCallableRunTypeImpl<
-#               std::function<bool ()>>'
+# access hard-errors with `implicit instantiation of undefined
+# template 'ExtractCallableRunTypeImpl<std::function<bool ()>>'`.
 #
 # libc++ / libstdc++ implement std::function::operator() as a direct
-# member, so Callable == Base, the const spec matches, and Linux/macOS
-# work without patching.
+# member, so Callable == Base, the const spec at line 117 matches,
+# and Linux/macOS work without patching.
 #
-# Earlier Patch 10 v1 (reverted in 15df34e) tried to add a partial
-# spec on ExtractCallableRunTypeImpl. The primary has TWO template
-# args (Callable, Signature with default); a partial spec with only
-# one arg interacts badly with the existing 4 const/non-const specs
-# and the default-arg substitution rules — and the result regressed
-# both linux-x64 (clang/libc++) and windows-arm64.
+# Two earlier attempts failed:
+#   v1 (15df34e revert): added a partial spec on the trait with one
+#     template arg. The primary has TWO template args (Callable,
+#     Signature with default); the one-arg partial interacted badly
+#     with the existing 4 specs and default-arg substitution — and
+#     regressed both linux-x64 and windows-arm64.
+#   v2 (22a33c8): added a high-level FunctorTraits<std::function<...>>
+#     spec, expecting partial-ordering to make it win over the
+#     existing IsComplete-constrained spec on line 240. But evaluating
+#     line 240's `requires IsComplete<DecayedFunctorTraits<...>>`
+#     triggers a hard error during sizeof(T) — before partial-
+#     ordering kicks in. So v2 ran but didn't take effect; CI run
+#     25852791414 produced the IDENTICAL backtrace (with line numbers
+#     shifted by +4 from the new #include, confirming the patch
+#     applied but didn't shield).
 #
-# v2: bypass the trait chain entirely on MSVC. Add a top-level
-# `FunctorTraits<std::function<R(Args...)>, BoundArgs...>` spec
-# directly providing RunType / Invoke / etc. Gated on `_MSC_VER` so
-# Linux/macOS see no change at all (the existing IsComplete path
-# at line 240 keeps working as-is). Smoke-tested with g++ -std=c++20
-# -fsyntax-only against the actual V8 14.9 file — both with and
-# without _MSC_VER faked — confirming RunType resolves correctly in
-# both cases.
+# v3 (this patch): fix the trait at the ROOT by handling the
+# `R (Base::*)(Args...) [quals]` shape where Base is a proper base
+# class of Callable — exactly the MS-STL std::function-via-
+# inheritance pattern. Constraint `derived_from<Callable, Base> &&
+# !same_as<Callable, Base>` keeps it inactive on Linux/macOS where
+# operator() is a direct member (Callable == Base, existing const
+# spec at line 117 wins unambiguously).
+#
+# Smoke-tested with g++ -std=c++20 -fsyntax-only against the actual
+# V8 14.9 file in three configurations:
+#   1) no _MSC_VER, libstdc++ std::function (direct op()):
+#      RunType = bool() via existing const spec.
+#   2) faked _MSC_VER + custom MyFn-via-base mimicking MS-STL:
+#      RunType = bool() via new Base-fallback spec.
+#   3) faked _MSC_VER + lambda (direct op()):
+#      RunType = bool(int) via existing const spec (new spec's
+#      !same_as constraint excludes it; no ambiguity).
 run_py_patch \
-  "bind-internal.h: FunctorTraits<std::function<...>> under _MSC_VER" \
+  "bind-internal.h: Base-class fallback for ExtractCallableRunTypeImpl" \
   "$V8_DIR/src/base/functional/bind-internal.h" \
-  "// libv8: MS-ABI fix for FunctorTraits<std::function<...>>" <<'PYEOF'
+  "// libv8: MS-ABI fallback specs for ExtractCallableRunTypeImpl" <<'PYEOF'
 import pathlib, sys
 p = pathlib.Path(sys.argv[1])
 src = p.read_text(encoding="utf-8")
 
-# Add #include <functional> right after the existing #include <utility>.
-# Unconditional include — std::function name is needed by the spec
-# below. Cheap and avoids #if branching the include itself.
+# 1) Add `#include <concepts>` for std::derived_from / std::same_as.
 inc_anchor = "#include <utility>\n"
 if inc_anchor not in src:
     sys.exit("bind-internal.h: '#include <utility>' anchor not found")
-inc_block = (
+src = src.replace(inc_anchor,
     "#include <utility>\n"
-    "// libv8: <functional> needed by the _MSC_VER FunctorTraits spec\n"
-    "// for std::function below. Include unconditionally — cheap and\n"
-    "// avoids #if-branching the include itself.\n"
-    "#include <functional>\n"
-)
-src = src.replace(inc_anchor, inc_block, 1)
+    "#include <concepts>  // libv8: derived_from/same_as for the\n"
+    "                     // Base-fallback specs below.\n",
+    1)
 
-# Insert the _MSC_VER-gated FunctorTraits spec right before the closing
-# namespace brace. Keeping it at the bottom of the namespace avoids any
-# forward-decl ordering concerns with FunctorTraits's primary template.
-ns_close = "}  // namespace v8::base::internal"
-if ns_close not in src:
-    sys.exit("bind-internal.h: namespace close anchor not found")
-spec = (
+# 2) After the existing 4-variant ExtractCallableRunTypeImpl block's
+# `#undef`, add a parallel 4-variant block whose partial specs match
+# `R (Base::*)(Args...) quals` where Base is a proper base of Callable.
+anchor = "#undef BIND_INTERNAL_EXTRACT_CALLABLE_RUN_TYPE_WITH_QUALS\n"
+if anchor not in src:
+    sys.exit("bind-internal.h: existing macro #undef anchor not found")
+addition = anchor + (
     "\n"
-    "// libv8: MS-ABI fix for FunctorTraits<std::function<...>>.\n"
-    "//\n"
-    "// MS-STL implements std::function with operator() inherited from\n"
-    "// a base class, so decltype(&std::function<R(Args...)>::operator())\n"
-    "// resolves to R (BASE::*)(Args...) const where BASE != std::function.\n"
-    "// The 4 ExtractCallableRunTypeImpl partial specs above all require\n"
-    "// the member-pointer's class part to equal Callable exactly, so\n"
-    "// none match for std::function on MSVC; the primary template stays\n"
-    "// undefined and any ::Type access hard-errors with 'implicit\n"
-    "// instantiation of undefined template'.\n"
-    "//\n"
-    "// Bypass the whole trait chain on MSVC by specializing FunctorTraits\n"
-    "// directly. Gated on _MSC_VER so libc++ / libstdc++ Linux/macOS see\n"
-    "// literally no change — their existing IsComplete-constrained path\n"
-    "// at line 240 above keeps working exactly as before.\n"
+    "// libv8: MS-ABI fallback specs for ExtractCallableRunTypeImpl.\n"
+    "// When Callable inherits operator() from a base class (MS-STL\n"
+    "// std::function), `decltype(&Callable::operator())` resolves\n"
+    "// to `R (Base::*)(Args...) [quals]` with Base != Callable, so\n"
+    "// none of the 4 specs above match. These 4 fallback specs\n"
+    "// relax the class-part of the member-pointer to any Base type,\n"
+    "// gated on Callable strictly derived from Base. On libc++/\n"
+    "// libstdc++ operator() is a direct member, Callable == Base,\n"
+    "// the !same_as constraint excludes these — existing specs win.\n"
     "#if defined(_MSC_VER)\n"
-    "template <typename R, typename... Args, typename... BoundArgs>\n"
-    "struct FunctorTraits<std::function<R(Args...)>, BoundArgs...> {\n"
-    "  using RunType = R(Args...);\n"
-    "  static constexpr bool is_method = false;\n"
-    "  static constexpr bool is_nullable = true;\n"
-    "  static constexpr bool is_callback = false;\n"
-    "  static constexpr bool is_stateless = false;\n"
-    "\n"
-    "  template <typename F, typename... RunArgs>\n"
-    "  static R Invoke(F&& f, RunArgs&&... args) {\n"
-    "    return std::forward<F>(f)(std::forward<RunArgs>(args)...);\n"
+    "#define BIND_INTERNAL_EXTRACT_CALLABLE_RUN_TYPE_FROM_BASE(quals)        \\\n"
+    "  template <typename Callable, typename Base, typename R,               \\\n"
+    "            typename... Args>                                           \\\n"
+    "    requires(std::derived_from<Callable, Base> &&                       \\\n"
+    "             !std::same_as<Callable, Base>)                             \\\n"
+    "  struct ExtractCallableRunTypeImpl<Callable,                           \\\n"
+    "                                    R (Base::*)(Args...) quals> {       \\\n"
+    "    using Type = R(Args...);                                            \\\n"
     "  }\n"
-    "};\n"
-    "#endif  // _MSC_VER\n"
     "\n"
+    "BIND_INTERNAL_EXTRACT_CALLABLE_RUN_TYPE_FROM_BASE();\n"
+    "BIND_INTERNAL_EXTRACT_CALLABLE_RUN_TYPE_FROM_BASE(const);\n"
+    "BIND_INTERNAL_EXTRACT_CALLABLE_RUN_TYPE_FROM_BASE(noexcept);\n"
+    "BIND_INTERNAL_EXTRACT_CALLABLE_RUN_TYPE_FROM_BASE(const noexcept);\n"
+    "\n"
+    "#undef BIND_INTERNAL_EXTRACT_CALLABLE_RUN_TYPE_FROM_BASE\n"
+    "#endif  // _MSC_VER\n"
 )
-src = src.replace(ns_close, spec + ns_close, 1)
+src = src.replace(anchor, addition, 1)
 p.write_text(src, encoding="utf-8")
 PYEOF
 
