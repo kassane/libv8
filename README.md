@@ -1,84 +1,54 @@
 # libv8
 
-Fully-automated builds of the V8 JavaScript engine as a static monolith
-library (`libv8_monolith.a` / `v8_monolith.lib`) for multiple platforms.
+V8 JavaScript engine built as a static monolith (`libv8_monolith.a` /
+`v8_monolith.lib`) for Linux, macOS, and Windows.
 
-Inspired by [`kuoruan/libv8`](https://github.com/kuoruan/libv8) and
-[`just-js/v8`](https://github.com/just-js/v8); rewritten around a single
-`scripts/` pipeline that is reproducible from your laptop and identical to CI.
+## Releases
 
-## What you get
-
-Per release, one archive per target × profile:
+Each release ships one archive per target × profile, plus `SHA256SUMS`:
 
 ```
 libv8-<version>-<os>-<arch>-<profile>.tar.xz   # linux, macos
 libv8-<version>-<os>-<arch>-<profile>.zip      # windows
-SHA256SUMS                                     # combined manifest
 ```
 
-Archive layout:
+Inside:
 
 ```
-include/                # V8 public headers
-lib/libv8_monolith.a    # the static monolith (v8_monolith.lib on Windows)
+include/                # public headers
+lib/libv8_monolith.a    # static monolith (v8_monolith.lib on Windows)
 gen/                    # generated headers (torque, inspector, ...)
 args.gn                 # exact GN args used for this build
 VERSION                 # V8 tag this artifact was cut from
 ```
 
-Supported targets:
+### Targets
 
-| OS      | Arch  | Runner                          | Status |
-|---------|-------|---------------------------------|--------|
-| Linux   | x64   | `ubuntu-22.04`                  | ✅ required |
-| Linux   | arm64 | `ubuntu-22.04-arm`              | optional (V8 14.9 blockers) |
-| macOS   | arm64 | `macos-latest`                  | optional |
-| Windows | x64   | `windows-latest` (Server 2025)  | optional (V8 14.9 blockers) |
-| Windows | arm64 | `windows-11-arm`                | optional (V8 14.9 blockers) |
+| OS      | Arch  | Runner             |
+|---------|-------|--------------------|
+| Linux   | x64   | `ubuntu-22.04`     |
+| Linux   | arm64 | `ubuntu-22.04-arm` |
+| macOS   | arm64 | `macos-latest`     |
+| Windows | x64   | `windows-latest`   |
+| Windows | arm64 | `windows-11-arm`   |
 
-Optional targets run with `continue-on-error`, so a failure on them doesn't
-fail the workflow. Linux x64 is the only hard-required target.
+`linux-x64` is required; the rest are `continue-on-error` so a paid-runner
+outage doesn't fail the workflow. `scripts/patch-v8.sh` carries the V8
+14.9-specific source patches that the non-Linux targets need; each patch is
+idempotent and sentinel-gated so a future V8 bump that ships the fix
+upstream silently no-ops.
 
-### V8 14.9 source patches
+### Profiles
 
-The optional targets each hit a V8 14.9 source-level bug. `scripts/patch-v8.sh`
-applies three surgical, idempotent post-fetch patches:
+| Profile               | i18n | Pointer compression | Sandbox |
+|-----------------------|------|---------------------|---------|
+| `default`             | off  | off                 | off     |
+| `pointer-compression` | off  | on                  | off     |
+| `sandbox`             | off  | on                  | on      |
+| `i18n`                | on   | off                 | off     |
 
-- **`src/base/macros.h`** — wraps `__has_warning("-Wlifetime-safety")` and
-  `__has_warning("-Wreturn-stack-address")` in `defined(__clang__)` so gcc's
-  preprocessor doesn't choke on the clang-only extension (`linux-arm64` uses
-  gcc because Chromium ships no aarch64 prebuilt clang at V8 14.9's pinned
-  revision).
-
-- **`build/vs_toolchain.py::_CopyDebugger`** — replaced with a no-op + log.
-  Upstream raises when host `Debuggers/x64/dbghelp.dll` is missing; the
-  `windows-11-arm` SDK installer delivers only arm64 Debugging Tools, and
-  the static V8 monolith doesn't load those DLLs anyway.
-
-- **`src/objects/js-atomics-synchronization.h`** — forces
-  `alignas(uint64_t)` on `JSSynchronizationPrimitive` when
-  `TAGGED_SIZE_8_BYTES`. `V8_OBJECT`'s `pack(4)` caps class alignment at 4
-  on MSVC (gcc/clang honour `alignas` inside `pack`), so `sizeof` comes
-  out 4 bytes short of Torque's tagged-size-rounded computation — the
-  `JSAtomicsMutex::owner_thread_id_` and `JSAtomicsCondition::optional_padding_`
-  Torque/C++ offset `static_assert`s fail on `windows-x64`.
-
-Each patch carries a sentinel comment and silently skips if upstream
-matches (so a future V8 bump that fixes the bug doesn't fail this script).
-
-Build profiles (see `args/profiles/`):
-
-| Profile               | i18n | Pointer compression | Sandbox | Use case |
-|-----------------------|------|---------------------|---------|----------|
-| `default`             | off  | off                 | off     | smallest, most-portable embedding |
-| `pointer-compression` | off  | on                  | off     | matches Node.js / Chrome layout   |
-| `sandbox`             | off  | on                  | on      | hardened embedding                |
-| `i18n`                | on   | off                 | off     | needs `Intl` / ICU                |
-
-> Pointer compression and sandbox are ABI-affecting. Embedding code **must**
-> be compiled with `-DV8_COMPRESS_POINTERS` (and `-DV8_ENABLE_SANDBOX` for
-> the `sandbox` profile) matching the library it links against.
+Pointer compression and sandbox are ABI-affecting: embedding code must be
+built with matching `-DV8_COMPRESS_POINTERS` / `-DV8_ENABLE_SANDBOX`.
 
 ## Build locally
 
@@ -86,11 +56,10 @@ Build profiles (see `args/profiles/`):
 just fetch                                # clone depot_tools + sync V8
 just build                                # host triple, default profile
 just build linux-arm64 pointer-compression
-just package linux-arm64 pointer-compression
 just all macos-arm64                      # fetch + build + package
 ```
 
-Scripts work standalone if you don't have `just`:
+Without `just`:
 
 ```bash
 ./scripts/fetch.sh
@@ -98,65 +67,58 @@ Scripts work standalone if you don't have `just`:
 ./scripts/package.sh linux-x64 default
 ```
 
-### Requirements
+Requires Python 3.8+, `git`, a C++ toolchain, and ~25 GB free disk. `ccache`
+/ `sccache` are auto-detected.
 
-- Python 3.8+, `git`, ~25 GB disk
-- A C++ toolchain (clang preferred; MSVC on Windows)
-- Optional: `ccache` / `sccache` — auto-detected and wired into `args.gn`
+## Releases & version tracking
 
-## Bump the V8 version
+Releases are fully automated:
 
-```bash
-echo '14.5.227.3' > VERSION
-git commit -am 'chore: bump V8 to 14.5.227.3'
-git tag v14.5.227.3
-git push --follow-tags
-```
+1. **Weekly cron** (`version-check.yml`, Mondays 06:00 UTC) compares `VERSION`
+   against the latest upstream V8 tag.
+2. If outdated, it opens a `chore: bump V8 to <ver>` PR with auto-merge
+   enabled.
+3. PR CI runs the full matrix on the proposed version. Only a green PR
+   merges — a broken upstream is caught before it touches `main`.
+4. `auto-tag.yml` watches for `VERSION`-changing pushes to `main` and
+   pushes the matching `v<ver>` tag, which triggers `release.yml` to
+   build and publish.
 
-The tag push triggers `release.yml` which builds every target × profile and
-publishes a GitHub Release with archives + `SHA256SUMS`.
+Manual bump: edit `VERSION`, merge → tag is created automatically.
 
-## Automated upstream tracking
+Manual dispatch of `version-check.yml` accepts a `force: true` input to
+open the PR even when `VERSION` is current (useful for re-rolling a release).
 
-`.github/workflows/version-check.yml` runs every Monday at 06:00 UTC.
-It compares `./VERSION` against the latest V8 tag and, when newer:
+### Prerequisites
 
-1. commits the bump to `main`
-2. pushes the matching `v<ver>` tag
-3. which triggers `release.yml` → publishes the new release
-
-> Optional: provide a `RELEASE_TOKEN` secret (PAT with `contents:write`) if
-> `main` is protected against the default `GITHUB_TOKEN`.
+- Repo setting **Allow auto-merge** must be on.
+- Optional: set a `RELEASE_TOKEN` secret (PAT with `contents:write`,
+  `pull-requests:write`) if branch protection blocks `GITHUB_TOKEN`.
 
 ## CI runner cost
 
-macOS / Windows minutes are billed at 10× / 2× the Linux rate. The workflow
-degrades gracefully:
-
-- macOS and Windows matrix entries run with `continue-on-error`, so a billing
-  block doesn't turn PRs red — Linux jobs still hard-fail on real regressions.
-- `build.yml` accepts a `runners` input: `all` (default) or `free-only`
-  (Linux x64 + arm64 only).
-
-`release.yml` always uses `all` so published releases stay complete.
+macOS/Windows minutes bill at 10×/2× Linux. `build.yml` accepts
+`runners: free-only` (Linux x64 + arm64) for cheap iteration; `release.yml`
+always uses `all`.
 
 ## Repository layout
 
 ```
-.
-├── VERSION                     # The pinned V8 tag (single source of truth)
-├── .gclient                    # depot_tools solution with pruned deps
-├── args/
-│   ├── common.gn
-│   ├── {linux,macos,windows}.{x64,arm64}.gn
-│   └── profiles/{default,pointer-compression,sandbox,i18n}.gn
-├── scripts/{lib,fetch,build,package,clean,check-version}.sh
-├── Justfile
-└── .github/
-    ├── actions/setup-depot-tools/
-    └── workflows/{build,release,version-check}.yml
+VERSION                # pinned V8 tag (single source of truth)
+.gclient               # depot_tools solution with pruned deps
+args/                  # GN args per target + profile
+scripts/               # fetch / build / package / patch / version pipeline
+Justfile
+.github/
+  actions/setup-depot-tools/
+  workflows/{build,release,version-check,auto-tag}.yml
 ```
+
+## Credits
+
+Inspired by [`kuoruan/libv8`](https://github.com/kuoruan/libv8) and
+[`just-js/v8`](https://github.com/just-js/v8).
 
 ## License
 
-MIT. V8 is licensed under its own BSD-style terms (shipped inside each archive).
+MIT. V8 ships under its own BSD-style terms (included in each archive).

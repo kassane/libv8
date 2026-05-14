@@ -1,17 +1,17 @@
 name: version-check
 
-# Fully automated upstream tracking:
-#   - runs weekly (and on demand)
-#   - if upstream V8 has a newer tag than ./VERSION, bumps VERSION on main,
-#     pushes a matching git tag, which triggers release.yml to build + publish.
+# Weekly upstream watcher. When V8 cuts a tag newer than ./VERSION,
+# opens a `chore: bump V8 to <version>` PR with auto-merge enabled.
+# CI on the PR runs the full build matrix; only a green PR merges,
+# which is then picked up by auto-tag.yml to cut the release.
 
 on:
   schedule:
     - cron: '0 6 * * 1'  # Mondays 06:00 UTC
   workflow_dispatch:
     inputs:
-      force_tag:
-        description: 'Force-tag even if VERSION is unchanged'
+      force:
+        description: 'Open a PR even if VERSION is already current'
         required: false
         default: 'false'
         type: choice
@@ -19,6 +19,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   check:
@@ -29,40 +30,63 @@ jobs:
       current:  ${{ steps.check.outputs.current }}
     steps:
       - uses: actions/checkout@v6
-        with:
-          # Use a PAT (or default token) that can push tags + commits to main.
-          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
-
       - id: check
         run: ./scripts/check-version.sh
 
-  bump:
+  open-pr:
     needs: check
-    if: needs.check.outputs.outdated == 'true' || inputs.force_tag == 'true'
+    if: needs.check.outputs.outdated == 'true' || inputs.force == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v6
         with:
+          # PAT required if branch protection on main blocks the default
+          # token from being a "trusted" PR author. Falls back to
+          # GITHUB_TOKEN otherwise.
           token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
 
-      - name: Bump VERSION
-        if: needs.check.outputs.outdated == 'true'
+      - name: Configure git
         run: |
-          echo "${{ needs.check.outputs.latest }}" > VERSION
-          git config user.name  "libv8-bot"
-          git config user.email "libv8-bot@users.noreply.github.com"
-          git add VERSION
-          git commit -m "chore: bump V8 to ${{ needs.check.outputs.latest }}"
-          git push origin HEAD:main
+          git config user.name  'libv8-bot'
+          git config user.email 'libv8-bot@users.noreply.github.com'
 
-      - name: Tag release
+      - name: Push bump branch
+        env:
+          NEW: ${{ needs.check.outputs.latest }}
         run: |
-          TAG="v$(head -n1 VERSION | tr -d '[:space:]')"
-          git config user.name  "libv8-bot"
-          git config user.email "libv8-bot@users.noreply.github.com"
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "tag $TAG already exists, skipping"
+          BRANCH="auto-bump/v${NEW}"
+          # If the branch already exists upstream (previous run of this
+          # workflow), reset to it; otherwise branch off main.
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            git fetch origin "$BRANCH"
+            git checkout -B "$BRANCH" "origin/$BRANCH"
           else
-            git tag -a "$TAG" -m "Auto-release for V8 $TAG"
-            git push origin "$TAG"
+            git checkout -b "$BRANCH"
           fi
+          echo "$NEW" > VERSION
+          if git diff --quiet; then
+            echo "VERSION already $NEW on $BRANCH, nothing to commit"
+          else
+            git add VERSION
+            git commit -m "chore: bump V8 to $NEW"
+          fi
+          git push -u origin "$BRANCH"
+          echo "BRANCH=$BRANCH" >> "$GITHUB_ENV"
+
+      - name: Open or update PR with auto-merge
+        env:
+          NEW: ${{ needs.check.outputs.latest }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          # gh pr create exits non-zero if a PR for this head already
+          # exists; tolerate that and fall through to enabling auto-merge.
+          gh pr create \
+            --title "chore: bump V8 to $NEW" \
+            --body  "Automated weekly upstream bump. Auto-merge is enabled; this PR merges once required CI passes, after which auto-tag.yml cuts the v$NEW release." \
+            --base  main \
+            --head  "$BRANCH" \
+            || echo "PR already exists for $BRANCH, continuing to enable auto-merge"
+          gh pr merge "$BRANCH" --auto --squash --delete-branch
