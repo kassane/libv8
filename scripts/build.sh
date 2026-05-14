@@ -89,7 +89,19 @@ PYEOF
 fi
 
 log "ninja -C out/$OUT_NAME v8_monolith (jobs=$NINJA_JOBS)"
-( cd "$V8_DIR" && ninja -C "out/$OUT_NAME" -j "$NINJA_JOBS" v8_monolith )
+NINJA_LOG="$OUT_DIR/ninja-build.log"
+set +e
+( cd "$V8_DIR" && ninja -C "out/$OUT_NAME" -j "$NINJA_JOBS" v8_monolith ) \
+  2>&1 | tee "$NINJA_LOG"
+RC=${PIPESTATUS[0]}
+set -e
+if [[ $RC -ne 0 ]]; then
+  echo "================================================================"
+  echo "ninja failed (rc=$RC); first FAILED block follows (max 80 lines):"
+  echo "================================================================"
+  awk '/^FAILED:/{found=1} found' "$NINJA_LOG" | head -80
+  exit "$RC"
+fi
 
 # Surface the resolved args (useful for debugging upstream changes).
 ( cd "$V8_DIR" && gn args "out/$OUT_NAME" --list --short > "$OUT_DIR/args.resolved.txt" ) || true
