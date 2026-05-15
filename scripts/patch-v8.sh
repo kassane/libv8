@@ -377,13 +377,13 @@ edits = [
         "#endif\n"
         "} V8_OBJECT_END;",
     ),
-    # JSAtomicsMutex: trailing pad to keep sizeof 8-aligned.
+    # JSAtomicsMutex: trailing pad to keep sizeof 8-aligned. V8 15.0
+    # dropped the in-class `kOwnerThreadIdOffset` declaration (and the
+    # accompanying comment block) that V8 14.9 had — anchor was updated
+    # accordingly.
     (
         "  std::atomic<int32_t> owner_thread_id_;\n"
         "\n"
-        "  // Defined out-of-line below the class so `offsetof` / `sizeof` on the\n"
-        "  // still-incomplete type can appear in an initializer.\n"
-        "  static const int kOwnerThreadIdOffset;\n"
         "  static const int kHeaderSize;\n"
         "} V8_OBJECT_END;",
         "  std::atomic<int32_t> owner_thread_id_;\n"
@@ -393,9 +393,6 @@ edits = [
         "  uint32_t libv8_mutex_trail_pad_;\n"
         "#endif\n"
         "\n"
-        "  // Defined out-of-line below the class so `offsetof` / `sizeof` on the\n"
-        "  // still-incomplete type can appear in an initializer.\n"
-        "  static const int kOwnerThreadIdOffset;\n"
         "  static const int kHeaderSize;\n"
         "} V8_OBJECT_END;",
     ),
@@ -591,6 +588,46 @@ new = (
 )
 if old not in src:
     sys.exit("runtime-test.cc: atomic_flag initializer anchor not found")
+src = src.replace(old, new, 1)
+p.write_text(src, encoding="utf-8")
+PYEOF
+
+# ----------------------------------------------------------------------------
+# Patch 12: src/wasm/baseline/liftoff-compiler.cc — qualify std::nullptr_t.
+#
+# V8 15.0+ has a bare `nullptr_t` (no `std::` prefix) at
+# src/wasm/baseline/liftoff-compiler.cc:1527:
+#
+#   if constexpr (!std::is_same_v<nullptr_t, LoadFn>) {
+#
+# Per the standard, `nullptr_t` lives in namespace `std`. Older toolchains
+# leaked it into the global namespace via implementation details in
+# <cstddef> / <stddef.h>; the LLVM trunk-circa-early-2026 clang
+# (CR_CLANG_REVISION=llvmorg-23-init-10931-…) V8 15.0 ships with
+# tightened that up and rejects the unqualified form, failing the
+# required linux-x64 (default) build:
+#
+#   error: unknown type name 'nullptr_t'; did you mean 'std::nullptr_t'?
+#
+# All other compilers we use (gcc-14 on linux-arm64, Apple clang on
+# macos-arm64, clang-cl on Windows) hit the same TU and either reject
+# similarly or accept the leaked alias by chance. The cleanest fix is
+# to add the `std::` qualifier on V8's side.
+run_py_patch \
+  "liftoff-compiler.cc: qualify std::nullptr_t" \
+  "$V8_DIR/src/wasm/baseline/liftoff-compiler.cc" \
+  "// libv8: qualified std::nullptr_t" <<'PYEOF'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+src = p.read_text(encoding="utf-8")
+old = "      if constexpr (!std::is_same_v<nullptr_t, LoadFn>) {\n"
+new = (
+    "      // libv8: qualified std::nullptr_t (LLVM-trunk clang no longer\n"
+    "      // leaks ::nullptr_t into global scope via <cstddef>).\n"
+    "      if constexpr (!std::is_same_v<std::nullptr_t, LoadFn>) {\n"
+)
+if old not in src:
+    sys.exit("liftoff-compiler.cc: nullptr_t anchor not found")
 src = src.replace(old, new, 1)
 p.write_text(src, encoding="utf-8")
 PYEOF

@@ -33,16 +33,38 @@ sed 's/^/    /' "$ARGS_FILE" >&2
 log "gn gen $OUT_DIR"
 ( cd "$V8_DIR" && gn gen "out/$OUT_NAME" )
 
+# V8 15.0+ emits ninja rules that list `aarch64-linux-gnu-{ar,ld,nm,…}`
+# as a *relative-path file dependency* of archive/link targets, not as
+# a PATH-resolved command. So even with binutils-aarch64-linux-gnu
+# installed, ninja errors:
+#   ninja: error: 'aarch64-linux-gnu-ar', needed by 'obj/libv8_libbase.a',
+#                 missing and no known rule to make it
+# because ninja stats the file relative to its cwd (the build out dir).
+# Symlink each /usr/bin/aarch64-linux-gnu-* into the build out dir so
+# ninja's relative stat() resolves to the real binary. linux-arm64 only;
+# other targets either don't use this prefix or don't run on aarch64.
+if [[ "$TARGET" == "linux-arm64" ]]; then
+  for tool in /usr/bin/aarch64-linux-gnu-*; do
+    [[ -e "$tool" ]] && ln -sf "$tool" "$OUT_DIR/$(basename "$tool")"
+  done
+fi
+
 NINJA_JOBS="${NINJA_JOBS:-$(nproc_portable)}"
 
-# Windows-only mitigation for the V8 14.9 ExtendedMap layout mismatch.
+# Windows-only mitigation for the V8 14.9/15.0 ExtendedMap +
+# JSInterceptorMap layout mismatch.
 #
 # Torque tool emits `static_assert(kSize == sizeof(ExtendedMap));` plus
-# related JSInterceptorMap field-offset asserts in
-# gen/torque-generated/src/objects/map-tq.cc with kSize = 73. MS-ABI
-# clang-cl gives sizeof(ExtendedMap) = 76 (inheritance alignment
-# round-up), so the asserts fail. Itanium-ABI gcc/clang on Linux/macOS
-# give sizeof = 73 and pass.
+# the JSInterceptorMap field-offset asserts with kSize/kOffset values
+# derived from a strict tagged-size-rounded layout. V8 14.9 emitted
+# all of these into gen/torque-generated/src/objects/map-tq.cc; V8 15.0
+# split the JSInterceptorMap asserts into a separate js-interceptor-
+# map-tq.cc. We iterate both files so the patch covers either layout.
+#
+# MS-ABI clang-cl gives sizeof(ExtendedMap)/JSInterceptorMap 3 bytes
+# smaller than Torque assumes (inheritance round-up of pack(1) doesn't
+# happen the same way), so the asserts fail. Itanium-ABI gcc/clang on
+# Linux/macOS pass.
 #
 # These asserts are compile-time-only sanity checks. V8's runtime field
 # access uses C++ named accessors (e.g. `map->bit_field_ex_`), not raw
@@ -58,12 +80,13 @@ NINJA_JOBS="${NINJA_JOBS:-$(nproc_portable)}"
 # block entirely.
 if [[ "$TARGET_OS" == windows ]]; then
   for GEN_PREFIX in "" "win_clang_x64/"; do
-    GEN_REL="${GEN_PREFIX}gen/torque-generated/src/objects/map-tq.cc"
-    log "windows: pre-generating ${GEN_REL} for assert weakening"
-    ( cd "$V8_DIR" && ninja -C "out/$OUT_NAME" -j "$NINJA_JOBS" "$GEN_REL" ) || true
-    GEN_FILE="$OUT_DIR/$GEN_REL"
-    if [[ -f "$GEN_FILE" ]]; then
-      python3 - "$GEN_FILE" <<'PYEOF'
+    for GEN_BASE in "map-tq.cc" "js-interceptor-map-tq.cc"; do
+      GEN_REL="${GEN_PREFIX}gen/torque-generated/src/objects/$GEN_BASE"
+      log "windows: pre-generating ${GEN_REL} for assert weakening"
+      ( cd "$V8_DIR" && ninja -C "out/$OUT_NAME" -j "$NINJA_JOBS" "$GEN_REL" ) || true
+      GEN_FILE="$OUT_DIR/$GEN_REL"
+      if [[ -f "$GEN_FILE" ]]; then
+        python3 - "$GEN_FILE" <<'PYEOF'
 import pathlib, re, sys
 p = pathlib.Path(sys.argv[1])
 src = p.read_text(encoding="utf-8")
@@ -79,12 +102,13 @@ for pat in patterns:
     src, k = re.subn(pat, "static_assert(true);", src, flags=re.DOTALL)
     n += k
 p.write_text(src, encoding="utf-8")
-print(f"libv8: weakened {n}/{len(patterns)} ExtendedMap static_asserts in {p}",
+print(f"libv8: weakened {n}/{len(patterns)} ExtendedMap/JSInterceptorMap static_asserts in {p}",
       file=sys.stderr)
 PYEOF
-    else
-      warn "post-codegen patch: ${GEN_REL} not present (skipping)"
-    fi
+      else
+        warn "post-codegen patch: ${GEN_REL} not present (skipping)"
+      fi
+    done
   done
 fi
 
