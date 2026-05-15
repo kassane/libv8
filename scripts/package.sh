@@ -39,6 +39,18 @@ cp -R "$V8_DIR/include/." "$STAGE/include/"
 log "staging library"
 cp "$LIB_PATH" "$STAGE/lib/"
 
+# i18n builds produce an icudtl.dat sidecar next to the binary. The
+# static-lib monolith doesn't load it on its own; the embedder must
+# call V8::InitializeICUDefaultLocation(path_to_icudtl) before
+# V8::Initialize, otherwise Intl.* and \p{…} unicode-property regex
+# throw at first use. Colocated with the static lib under lib/ so the
+# embedder can reference one well-known path inside the archive. Only
+# present for the `i18n` profile (other profiles don't produce it).
+if [[ -f "$OUT_DIR/icudtl.dat" ]]; then
+  log "staging icudtl.dat"
+  cp "$OUT_DIR/icudtl.dat" "$STAGE/lib/icudtl.dat"
+fi
+
 if [[ -d "$OUT_DIR/gen" ]]; then
   log "staging generated headers"
   # Only the public-ish bits embedders typically need; pull the full gen tree

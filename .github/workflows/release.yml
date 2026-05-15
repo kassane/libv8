@@ -36,8 +36,14 @@ jobs:
       profile: pointer-compression
       upload_artifacts: true
 
+  build-i18n:
+    uses: ./.github/workflows/build.yml
+    with:
+      profile: i18n
+      upload_artifacts: true
+
   release:
-    needs: [build-default, build-pointer-compression]
+    needs: [build-default, build-pointer-compression, build-i18n]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
