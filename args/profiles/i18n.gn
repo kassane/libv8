@@ -2,3 +2,10 @@
 v8_enable_pointer_compression = false
 v8_enable_sandbox = false
 v8_enable_i18n_support = true
+
+# Pin sidecar-file mode for the ICU data so a future V8 default flip
+# (e.g. to data embedded inside the snapshot) doesn't silently break
+# the embedder's `V8::InitializeICUDefaultLocation(path_to_icudtl)`
+# flow. The packaged archive ships the produced icudtl.dat next to
+# the static lib under lib/.
+icu_use_data_file = true

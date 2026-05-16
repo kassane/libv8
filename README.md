@@ -50,6 +50,12 @@ upstream silently no-ops.
 Pointer compression and sandbox are ABI-affecting: embedding code must be
 built with matching `-DV8_COMPRESS_POINTERS` / `-DV8_ENABLE_SANDBOX`.
 
+The `i18n` profile additionally ships `lib/icudtl.dat` (the ICU data file).
+Embedders must call `V8::InitializeICUDefaultLocation(path_to_icudtl)`
+before `V8::Initialize`, otherwise `Intl.*` and Unicode-property RegExp
+(`\p{…}`, the `v` flag) throw at first use. Other profiles don't need
+this and don't ship the file.
+
 ## Build locally
 
 ```bash
