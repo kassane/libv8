@@ -100,6 +100,7 @@ jobs:
           ]'
           paid='[
             {"target":"macos-arm64","runner":"macos-latest","optional":true},
+            {"target":"macos-x64","runner":"macos-15-large","optional":true},
             {"target":"windows-x64","runner":"windows-latest","optional":true},
             {"target":"windows-arm64","runner":"windows-11-arm","optional":true}
           ]'

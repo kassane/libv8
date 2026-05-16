@@ -29,6 +29,7 @@ VERSION                 # V8 tag this artifact was cut from
 | Linux   | x64   | `ubuntu-22.04`     |
 | Linux   | arm64 | `ubuntu-22.04-arm` |
 | macOS   | arm64 | `macos-latest`     |
+| macOS   | x64   | `macos-15-large`   |
 | Windows | x64   | `windows-latest`   |
 | Windows | arm64 | `windows-11-arm`   |
 
