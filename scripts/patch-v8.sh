@@ -632,4 +632,58 @@ src = src.replace(old, new, 1)
 p.write_text(src, encoding="utf-8")
 PYEOF
 
+# ----------------------------------------------------------------------------
+# Patch 13: third_party/partition_alloc/.../allocator_shim_default_dispatch_to_partition_alloc.cc
+# — add the missing #include <cstring> for memcpy.
+#
+# V8 15.0.206 added AlignedRealloc / AlignedReallocUnchecked *template*
+# member functions to PartitionAllocFunctionsInternal that call memcpy:
+#
+#   PA_UNSAFE_TODO(memcpy(new_ptr, address, copy_size));
+#
+# but the translation unit never includes <cstring>. Under C++ two-phase
+# name lookup, a non-dependent name like `memcpy` must be declared at
+# template-definition time. gcc-14 (our linux-arm64 toolchain) enforces
+# this and fails:
+#
+#   error: there are no arguments to 'memcpy' that depend on a template
+#          parameter, so a declaration of 'memcpy' must be available
+#          [-fpermissive]
+#   note: 'memcpy' is defined in header '<cstring>'; this is probably
+#         fixable by adding '#include <cstring>'
+#
+# clang (every other target) resolves memcpy via transitive includes and
+# is laxer about two-phase lookup, so only linux-arm64 (gcc) trips. The
+# include is correct and harmless everywhere, so it's applied
+# unconditionally (no arch/compiler gate).
+#
+# partition_alloc is a gclient DEP, populated by `gclient sync` before
+# this script runs, so the file is present at patch time. Inserted after
+# the `#include <malloc.h>` / `#endif` block (placing it OUTSIDE that
+# conditional so memcpy is declared regardless of the malloc.h guard).
+run_py_patch \
+  "partition_alloc allocator_shim: add #include <cstring>" \
+  "$V8_DIR/third_party/partition_alloc/src/partition_alloc/shim/allocator_shim_default_dispatch_to_partition_alloc.cc" \
+  "// libv8: <cstring> for partition_alloc memcpy" <<'PYEOF'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+src = p.read_text(encoding="utf-8")
+if "#include <cstring>" in src:
+    # Upstream already includes it (future V8 fix) — nothing to do.
+    sys.exit("partition_alloc allocator_shim: <cstring> already present")
+anchor = "#include <malloc.h>\n#endif\n"
+new = (
+    "#include <malloc.h>\n"
+    "#endif\n"
+    "// libv8: <cstring> for partition_alloc memcpy (gcc two-phase lookup\n"
+    "// needs the declaration visible at template-definition time; V8\n"
+    "// 15.0.206's AlignedRealloc templates call memcpy without it).\n"
+    "#include <cstring>\n"
+)
+if anchor not in src:
+    sys.exit("partition_alloc allocator_shim: malloc.h anchor not found")
+src = src.replace(anchor, new, 1)
+p.write_text(src, encoding="utf-8")
+PYEOF
+
 log "patch-v8.sh: done"
